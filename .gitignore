@@ -1,0 +1,14 @@
+# Dev tooling
+ledger.db
+CLAUDE.md
+SKILL-v1.md
+SKILL-v2.md
+spotify_signal_engine_spec.md
+lastfm_taste_engine.zip
+
+# Generated — rebuild with build.sh / pack.sh
+data/music.db
+music-data-engine.zip
+
+# Claude Code
+.claude/

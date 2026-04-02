@@ -4,10 +4,9 @@ consolidate.py
 Merges all music data sources into a single SQLite database.
 
 Sources:
-  data/edgarturtleblot.csv        Last.fm export (98k plays, ~2006–present)
-  data/StreamingHistory0.json     Spotify play history (2,952 plays, 2019–2020)
-  data/Playlist1.json             Spotify playlists (73 playlists)
-  data/YourLibrary.json           Spotify saved tracks + albums
+  --csv                           Last.fm export CSV
+  --spotify-dir                   Directory containing StreamingHistory*.json,
+                                  YourLibrary.json, Playlist1.json
   data/Inferences.json            SKIPPED (ad-targeting labels, not music data)
 
 Output:
@@ -23,13 +22,13 @@ Tables:
   playlists       Spotify playlist items (flattened)
 
 Usage:
-  python consolidate.py [--data-dir DATA_DIR] [--out OUT_DB]
+  python consolidate.py --csv data/edgarturtleblot.csv --spotify-dir data/ --out data/music.db
 """
 
 import argparse
+import glob
 import json
 import sqlite3
-import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -261,37 +260,58 @@ def write_db(db_path: Path, plays, lib_tracks, lib_albums, playlist_rows):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="data", help="Directory containing source files")
-    ap.add_argument("--out",      default="data/music.db", help="Output SQLite path")
+    ap.add_argument("--csv",         required=True,        help="Last.fm CSV export path")
+    ap.add_argument("--spotify-dir", default=None,         help="Directory containing StreamingHistory*.json, YourLibrary.json, Playlist1.json")
+    ap.add_argument("--out",         default="data/music.db", help="Output SQLite path")
     args = ap.parse_args()
 
-    data_dir = Path(args.data_dir)
-    out_path = Path(args.out)
+    csv_path     = Path(args.csv)
+    spotify_dir  = Path(args.spotify_dir) if args.spotify_dir else None
+    out_path     = Path(args.out)
 
     print("Loading Last.fm CSV...")
-    lastfm = load_lastfm(data_dir / "edgarturtleblot.csv")
+    lastfm = load_lastfm(csv_path)
     print(f"  {len(lastfm):,} plays")
 
-    print("Loading Spotify streaming history...")
-    spotify = load_spotify_plays(data_dir / "StreamingHistory0.json")
-    print(f"  {len(spotify):,} plays")
+    spotify_plays_all: list[dict] = []
+    if spotify_dir:
+        history_files = sorted(glob.glob(str(spotify_dir / "StreamingHistory*.json")))
+        if history_files:
+            print(f"Loading Spotify streaming history ({len(history_files)} file(s))...")
+            for hf in history_files:
+                batch = load_spotify_plays(Path(hf))
+                spotify_plays_all.extend(batch)
+                print(f"  {hf}: {len(batch):,} plays")
+        else:
+            print("No StreamingHistory*.json files found in --spotify-dir; skipping Spotify plays.")
+    spotify = spotify_plays_all
+    print(f"  {len(spotify):,} Spotify plays total")
 
     print("Merging play timelines...")
-    plays = merge_plays(lastfm, spotify)
-    sources = {}
+    plays = merge_plays(lastfm, spotify) if spotify else lastfm
+    sources: dict[str, int] = {}
     for p in plays:
         sources[p["source"]] = sources.get(p["source"], 0) + 1
     for src, n in sorted(sources.items()):
         print(f"  {src}: {n:,}")
     print(f"  total: {len(plays):,}")
 
-    print("Loading Spotify library...")
-    lib_tracks, lib_albums = load_library(data_dir / "YourLibrary.json")
-    print(f"  {len(lib_tracks):,} saved tracks, {len(lib_albums):,} saved albums")
+    lib_tracks: list[dict] = []
+    lib_albums: list[dict] = []
+    playlist_rows: list[dict] = []
 
-    print("Loading Spotify playlists...")
-    playlist_rows = load_playlists(data_dir / "Playlist1.json")
-    print(f"  {len(playlist_rows):,} playlist items across playlists")
+    if spotify_dir:
+        library_path = spotify_dir / "YourLibrary.json"
+        if library_path.exists():
+            print("Loading Spotify library...")
+            lib_tracks, lib_albums = load_library(library_path)
+            print(f"  {len(lib_tracks):,} saved tracks, {len(lib_albums):,} saved albums")
+
+        playlist_path = spotify_dir / "Playlist1.json"
+        if playlist_path.exists():
+            print("Loading Spotify playlists...")
+            playlist_rows = load_playlists(playlist_path)
+            print(f"  {len(playlist_rows):,} playlist items across playlists")
 
     print(f"Writing {out_path}...")
     write_db(out_path, plays, lib_tracks, lib_albums, playlist_rows)

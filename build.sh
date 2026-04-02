@@ -5,9 +5,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 python3 "$SCRIPT_DIR/consolidate.py" \
-  --data-dir "$SCRIPT_DIR/data" \
+  --csv "$SCRIPT_DIR/data/edgarturtleblot.csv" \
+  --spotify-dir "$SCRIPT_DIR/data" \
   --out "$SCRIPT_DIR/data/music.db"
 
-python3 "$SCRIPT_DIR/spotify_signal_engine.py" \
+python3 "$SCRIPT_DIR/engine.py" signals \
   --input "$SCRIPT_DIR/data/StreamingHistory"*.json \
   --db "$SCRIPT_DIR/data/music.db"

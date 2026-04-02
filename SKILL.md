@@ -2,94 +2,85 @@
 name: music-data-engine
 description: >
   Unified music listening data analysis across Last.fm and Spotify.
-  **consolidate.py** — One-time setup: merges Last.fm CSV + Spotify exports into
-  a single SQLite database (music.db) with a unified play timeline, saved library,
-  and playlist data.
-  **lastfm_taste_engine.py** — Listening autobiography, long-delay true positives
-  (tracks returned to after 180d+ gaps), seasonal affinity, year-by-year obsessions,
-  season-aware 50-track playlist. Reads the Last.fm CSV directly.
-  **lastfm_trajectory_engine.py** — Artist/catalog deep analysis: event-gap chunk
-  segmentation (tunable τ), per-chunk attention share, per-track trajectory
-  classification (BURN / PERENNIAL / SLOW_BURN / FLASH_BINGE / REDISCOVERY),
-  session fingerprints, binge→lifespan correlations, gap distribution stats.
-  Reads the Last.fm CSV directly.
+  **consolidate.py** — One-time ingest: merges Last.fm CSV + Spotify exports into
+  music.db (SQLite). Run once, or after adding new exports.
+  **engine.py** — All analysis. Two subcommands: `signals` computes Spotify behavioral
+  signals (skip rate, completion ratio, session position) and writes them to music.db.
+  `analyze` reads music.db and produces a full JSON output: temporal overview,
+  listening clock, seasonal distribution, top lists, year-by-year obsessions, epoch
+  detection, per-track trajectory classification (FLASH_BINGE / DISCOVERY_HEAVY /
+  FRONT_LOADED / PERENNIAL_RETURN / SLOW_BURN / REDISCOVERY / DIFFUSE), LTP detection
+  (long-delay true positives — tracks returned to after 180d+ gaps), playlist scoring,
+  binge->lifespan correlations, and Spotify enrichment fields when available.
   Trigger when user uploads music data files or asks about listening history,
   music taste, playlist generation, artist deep-dive, trajectory analysis,
   or Spotify library/playlist data.
 ---
 
-# Music Data Engine — Skill Instructions
+# Music Data Engine -- Skill Instructions
 
 ## Asset locations
 
-```
-/mnt/skills/user/music-data-engine/
-  SKILL.md                           ← this file
-  consolidate.py                     ← merges all sources into music.db (run once)
-  lastfm_taste_engine.py             ← autobiography + playlist engine
-  lastfm_trajectory_engine.py        ← trajectory + behavioral analysis engine
-  data/
-    edgarturtleblot.csv              ← Last.fm export
-    StreamingHistory0.json           ← Spotify play history (2019–2020)
-    Playlist1.json                   ← Spotify playlists (73)
-    YourLibrary.json                 ← Spotify saved tracks + albums
-    music.db                         ← consolidated SQLite DB (pre-built)
-```
+| File | Location |
+|---|---|
+| Last.fm CSV | `data/edgarturtleblot.csv` |
+| Spotify streaming history | `data/StreamingHistory0.json` (and any `StreamingHistory*.json`) |
+| Spotify library | `data/YourLibrary.json` |
+| Spotify playlists | `data/Playlist1.json` |
+| SQLite database | `data/music.db` (pre-built; rebuild with `consolidate.py`) |
+| Analysis engine | `engine.py` |
+| Ingest script | `consolidate.py` |
 
-All files are **read-only here**. Always copy to working directory:
-
-```bash
-cp /mnt/skills/user/music-data-engine/consolidate.py /home/claude/
-cp /mnt/skills/user/music-data-engine/lastfm_taste_engine.py /home/claude/
-cp /mnt/skills/user/music-data-engine/lastfm_trajectory_engine.py /home/claude/
-cp -r /mnt/skills/user/music-data-engine/data /home/claude/
-```
-
-`music.db` is pre-built and ready to query. Re-run `consolidate.py` only if the
-source files have changed (e.g. a new Spotify or Last.fm export was added).
-
----
+The `data/music.db` is pre-built and ships with the skill bundle. Rebuild only if new
+exports are added.
 
 ## Which script to use
 
-| Question type | Script | Why |
-|---------------|--------|-----|
-| Setup / first run | `consolidate.py` | Merges all sources into `music.db`; `music.db` is pre-built so skip unless source files changed |
-| "Analyze my listening history" | Both engines + raw CSV groupby | See §TEMPORAL DECOMPOSITION — engine outputs alone are insufficient for time-series analysis |
-| "Generate a playlist" | `lastfm_taste_engine.py` | Season-aware LTP playlist with scoring |
-| "How do I feel about [artist]?" | `lastfm_trajectory_engine.py` | Per-track trajectory classification, chunk shares, behavioral fingerprints |
-| "What are my burn vs lasting tracks?" | `lastfm_trajectory_engine.py` | BURN/PERENNIAL classification with session metrics |
-| "How did my taste change over time?" | `lastfm_trajectory_engine.py` | Chunk segmentation + cross-chunk attention shares |
-| "Compare my taste to popularity" | `lastfm_trajectory_engine.py` | With `--popularity` JSON |
-| "What's in my Spotify library/playlists?" | Query `music.db` directly | `library_tracks`, `library_albums`, `playlists` tables |
-| "Skip rate / listening duration?" | Query `music.db` plays table | `ms_played` and `is_skip` fields from Spotify (source='spotify' or 'lastfm+spotify') |
-| "Deep dive on [specific pattern]" | Both engines + `music.db` | Engines for temporal/trajectory analysis; DB for cross-source joins |
+| Goal | Command |
+|---|---|
+| Rebuild database from raw exports | `consolidate.py` |
+| Add/refresh Spotify behavioral signals | `engine.py signals` |
+| Full listening autobiography + trajectory | `engine.py analyze` |
+| Artist deep-dive | `engine.py analyze --artist "Name"` |
+| Seasonal playlist | `engine.py analyze --months 3,4,5 --n 50` |
 
----
+## Step 0 -- Consolidate data sources (one-time setup)
 
-## Step 0 — Consolidate data sources (one-time setup)
-
-`music.db` is pre-built. Skip this step unless source files have changed.
+Only needed when adding new exports. The pre-built `data/music.db` is already current.
 
 ```bash
-cd /home/claude
-python3 consolidate.py --data-dir data --out data/music.db
+python consolidate.py --csv data/edgarturtleblot.csv --spotify-dir data/ --out data/music.db
 ```
 
-Output summary printed to console: play counts by source, merged row count, DB size.
+Expected output:
+```
+82,384 plays (Last.fm)
+2,952 plays (Spotify)
+lastfm: 82,015 | lastfm+spotify: 369 | spotify: 2,583
+total: 84,967
+2,170 saved tracks, 68 saved albums
+4,179 playlist items
+```
 
 ### music.db schema
 
+**`plays`** (written by consolidate.py):
+```sql
+id, source, ts, artist, album, track, ms_played, is_skip
 ```
-plays (id, source, ts, artist, album, track, ms_played, is_skip)
-  source: 'lastfm' | 'spotify' | 'lastfm+spotify'
-  ts: 'YYYY-MM-DD HH:MM'
-  ms_played, is_skip: NULL for lastfm-only rows
+`source` is one of `lastfm`, `spotify`, `lastfm+spotify`
 
-library_tracks (id, artist, album, track)   ← Spotify saved tracks
-library_albums (id, artist, album)           ← Spotify saved albums
-playlists (id, playlist_name, playlist_modified, artist, album, track)
+**`spotify_signals`** (written by `engine.py signals`):
+```sql
+artist, track, total_plays, total_ms_played, first_play, last_play, span_days,
+completion_mean_ratio, completion_source, skip_count, skip_rate, full_listen_rate,
+opener_count, closer_count, mid_count, opener_rate,
+within_session_repeats, max_repeats_in_session, sessions_with_repeat,
+peak_hour, late_night_pct, hour_distribution,
+plays_first_30d, plays_last_30d, burst_ratio_30
 ```
+
+**`library_tracks`, `library_albums`, `playlists`**: Spotify saved items (unchanged).
 
 ### Querying music.db
 
@@ -98,383 +89,252 @@ import sqlite3, json
 con = sqlite3.connect("data/music.db")
 con.row_factory = sqlite3.Row
 
-# Full play timeline
-rows = con.execute("SELECT * FROM plays ORDER BY ts").fetchall()
+# Total plays by source
+for r in con.execute("SELECT source, COUNT(*) n FROM plays GROUP BY source"):
+    print(r["source"], r["n"])
 
-# Skip rate from Spotify-sourced plays
-cur = con.execute("""
-    SELECT
-        COUNT(*) as total,
-        SUM(is_skip) as skips,
-        ROUND(AVG(ms_played)/60000.0, 1) as avg_min
-    FROM plays WHERE is_skip IS NOT NULL
-""")
-print(dict(cur.fetchone()))
+# Top 10 artists all-time
+for r in con.execute("SELECT artist, COUNT(*) n FROM plays GROUP BY artist ORDER BY n DESC LIMIT 10"):
+    print(r["artist"], r["n"])
 
-# All tracks in a specific playlist
-cur = con.execute(
-    "SELECT artist, track FROM playlists WHERE playlist_name = ?", ("golong",)
-)
-for row in cur: print(row["artist"], "-", row["track"])
+# Plays per year
+for r in con.execute("SELECT SUBSTR(ts,1,4) yr, COUNT(*) n FROM plays GROUP BY yr ORDER BY yr"):
+    print(r["yr"], r["n"])
 
-# Cross-source: saved tracks that also appear in Last.fm top 100
-cur = con.execute("""
-    SELECT lt.artist, lt.track, COUNT(*) as plays
-    FROM library_tracks lt
-    JOIN plays p ON lower(lt.artist)=lower(p.artist) AND lower(lt.track)=lower(p.track)
-    GROUP BY lt.artist, lt.track
-    ORDER BY plays DESC LIMIT 20
-""")
-for row in cur: print(row["plays"], row["artist"], "-", row["track"])
+# Join Spotify signals
+for r in con.execute("""
+    SELECT p.artist, p.track, COUNT(*) plays, s.skip_rate, s.completion_mean_ratio
+    FROM plays p
+    LEFT JOIN spotify_signals s ON LOWER(p.artist)=LOWER(s.artist) AND LOWER(p.track)=LOWER(s.track)
+    GROUP BY p.artist, p.track
+    ORDER BY plays DESC LIMIT 10
+"""):
+    print(dict(r))
 ```
 
----
-
-## Step 1 — Dependency check
+## Step 1 -- Dependency check
 
 ```bash
 python3 -c "import json, math, statistics, collections, datetime, argparse, pathlib, sqlite3; print('OK')"
 ```
 
-All stdlib. No pip installs required for any script.
+Always passes -- stdlib only, no pip installs required.
 
----
+## Step 2a -- Add Spotify behavioral signals (optional, one-time)
 
-## Step 2a — Run the taste engine (autobiography + playlist)
+Only needed if `spotify_signals` table is absent or you want to refresh it.
 
 ```bash
-cd /home/claude
-python3 lastfm_taste_engine.py --csv edgarturtleblot.csv --out taste_output.json --playlist 50
+python engine.py signals --db data/music.db --input data/StreamingHistory*.json
 ```
 
-With explicit reference date:
+With multiple history files:
 ```bash
-python3 lastfm_taste_engine.py --csv edgarturtleblot.csv --out taste_output.json --refdate YYYY-MM-DD
+python engine.py signals --db data/music.db --input data/StreamingHistory0.json data/StreamingHistory1.json
 ```
 
-### Output keys
+Expected output: ~540 tracks, 217 sessions, completion_source=relative
 
-| Key | What it is |
-|-----|-----------|
-| `overview` | Total plays, span, unique counts, avg/day |
-| `clock` | Plays by hour, peak hour, late-night % |
-| `seasonal` | Play counts + % by season |
-| `top_tracks` / `top_albums` / `top_artists` | Top 25 each |
-| `top_target_season_tracks` | Top 25 tracks in TARGET_SEASON_MONTHS |
-| `year_by_year` | Per-year: total, top artist, obsessions, top-10 |
-| `long_delay_true_positives` | Full LTP set with gap_stats per track |
-| `playlist` | Scored 50-track playlist |
+When signals are present, `analyze` adds a `spotify` sub-dict to each track record with
+`skip_rate`, `completion_mean_ratio`, `opener_rate`, `within_session_repeats`. If absent,
+those fields are `null` -- analysis is never gated on Spotify data.
 
----
+## Step 2b -- Run analysis
 
-## Step 2b — Run the trajectory engine (deep analysis)
-
-**Single artist, default τ (data-derived):**
 ```bash
-cd /home/claude
-python3 lastfm_trajectory_engine.py \
-  --csv edgarturtleblot.csv \
-  --artist "Muse" \
-  --out muse_trajectory.json \
-  --refdate YYYY-MM-DD
+# Full catalog
+python engine.py analyze --db data/music.db --out analysis.json
+
+# Single artist
+python engine.py analyze --db data/music.db --artist "Radiohead" --out radiohead.json
+
+# Spring playlist (50 tracks)
+python engine.py analyze --db data/music.db --months 3,4,5 --n 50 --out spring.json
+
+# Tune thresholds
+python engine.py analyze --db data/music.db --gap-days 180 --epoch-min-plays 30 --min-plays 5
+
+# Historical reference date
+python engine.py analyze --db data/music.db --refdate 2020-01-01 --out retro.json
 ```
 
-**Full catalog (no artist filter):**
-```bash
-python3 lastfm_trajectory_engine.py \
-  --csv edgarturtleblot.csv \
-  --out full_trajectory.json
-```
+### Output keys (`analyze`)
 
-**Explicit τ — tune chunk granularity:**
-```bash
-# Fine-grained: session-level chunks (~1–3 day gaps mark boundaries)
-python3 lastfm_trajectory_engine.py --csv export.csv --tau 2 --out sessions.json
+| Key | Description |
+|---|---|
+| `meta` | db path, ref_date, artist_filter, months_filter, has_spotify, config |
+| `overview` | total_plays, unique_artists/tracks/albums, span_days, span_years, avg_plays_per_day |
+| `clock` | plays_by_hour, peak_hour, late_night_pct |
+| `seasonal` | per-season play counts and percentages |
+| `top_tracks` | top 25 by play count |
+| `top_albums` | top 25 by play count |
+| `top_artists` | top 25 by play count |
+| `top_target_tracks` | top 25 tracks in target months (only when --months set) |
+| `year_by_year` | per year: total_plays, top_artist, obsessions (>10%), top_10_artists |
+| `epochs` | detected high-density listening periods with play counts |
+| `tracks` | per-track analysis records (see schema below) |
+| `trajectory_summary` | count per trajectory type |
+| `trajectory_type_stats` | avg plays/span/q1/q4/returns/ppd per type |
+| `correlations` | burst_30 vs total/span/returns; gap_skew vs span/returns |
+| `discovery_latency` | tracks first heard >60 days after their album's debut |
+| `ltp_tracks` | all LTP-qualifying tracks (long-delay true positives) |
+| `playlist` | scored/ranked tracks (only when --n set) |
 
-# Medium: streak-level (week-scale gaps)
-python3 lastfm_trajectory_engine.py --csv export.csv --tau 14 --out streaks.json
-
-# Coarse: era-level (months of silence mark boundaries)
-python3 lastfm_trajectory_engine.py --csv export.csv --tau 60 --out eras.json
-```
-
-**Multi-resolution — detect interacting scopes:**
-Run the same CSV at multiple τ values and compare `chunks` across outputs.
-A track's `chunk_rates` at τ=2 reveals binge session intensity;
-at τ=60 it reveals which life-eras it was active in.
-```bash
-for tau in 2 14 60; do
-  python3 lastfm_trajectory_engine.py \
-    --csv export.csv --artist "Radiohead" \
-    --tau $tau --out radiohead_t${tau}.json
-done
-```
-
-**Adjust τ percentile (data-derived default):**
-```bash
-# More conservative split (fewer, larger chunks)
-python3 lastfm_trajectory_engine.py --csv export.csv --tau-percentile 0.90
-
-# More aggressive split (more, smaller chunks)
-python3 lastfm_trajectory_engine.py --csv export.csv --tau-percentile 0.70
-```
-
-**With popularity comparison:**
-```bash
-# Create a JSON file: {"track_name": popularity_0_to_100, ...}
-python3 lastfm_trajectory_engine.py \
-  --csv edgarturtleblot.csv \
-  --artist "Muse" \
-  --popularity muse_pop.json \
-  --out muse_trajectory.json
-```
-
-**Adjust minimum plays threshold:**
-```bash
-python3 lastfm_trajectory_engine.py --csv export.csv --artist "Radiohead" --min-plays 10
-```
-
-### Output keys
-
-| Key | What it is |
-|-----|-----------|
-| `meta` | Run config, date range, play counts, τ used |
-| `chunks` | All detected listening chunks with density/breadth/top_artist |
-| `tracks` | Full per-track analysis (see schema below) |
-| `trajectory_summary` | Count of tracks by trajectory type |
-| `trajectory_type_stats` | Aggregate stats per trajectory type |
-| `correlations` | burst_30 → total/span/returns; gap_skew → span/returns (if n≥5) |
-| `discovery_latency` | Late-discovered tracks with delay measurements |
-| `popularity_comparison` | Percentile-normalized comparison (if supplied) |
-
-### Per-track schema
+### Per-track schema (`tracks` array)
 
 ```json
 {
-  "track": "Guiding Light",
-  "albums": ["The Resistance"],
-  "total_plays": 121,
-  "span_days": 5522,
-  "first_play": "2009-09-09",
-  "last_play": "2024-10-23",
-  "days_since_last": 516,
-  "burst_30": 18,
-  "burst_90": 25,
-  "burst_ratio_30": 0.149,
-  "burst_ratio_90": 0.207,
-  "q1": 0.802,
-  "q4": 0.058,
-  "long_returns": 6,
+  "artist": "...",
+  "track": "...",
+  "album": "...",
+  "total_plays": 47,
+  "span_days": 3200,
+  "first_play": "2010-03-12",
+  "last_play": "2025-11-01",
+  "days_since": 152,
+  "burst_ratio_30": 0.21,
+  "burst_ratio_90": 0.38,
+  "q1": 0.40,
+  "q4": 0.27,
+  "long_returns": 5,
+  "gap_skew": 1.24,
   "rediscoveries": [
-    {"gap_days": 412, "return_date": "2013-12-14", "return_year": 2013, "cluster_size": 3}
+    {"gap_days": 412, "return_date": "2013-05-01", "return_year": 2013, "cluster_size": 4}
   ],
-  "trajectory": "FRONT_LOADED",
-  "gap_stats": {
-    "mean_days": 42.3,
-    "median_days": 18.0,
-    "std_days": 61.2,
-    "skew": 1.8,
-    "pct_long": 0.083,
-    "n_gaps": 120
-  },
-  "chunk_rates": [
-    {
-      "chunk_name": "C4",
-      "chunk_start": "2010-02-14",
-      "chunk_end": "2010-04-01",
-      "chunk_total": 847,
-      "track_plays": 36,
-      "share": 0.0425,
-      "density_rank": 0.91
-    }
-  ],
+  "trajectory": "PERENNIAL_RETURN",
   "session": {
-    "distinct_days": 69,
-    "plays_per_active_day": 1.75,
-    "repeat_rate": 0.364,
-    "late_night_pct": 0.446
+    "distinct_days": 38,
+    "plays_per_active_day": 1.24,
+    "repeat_rate": 0.06,
+    "late_night_pct": 0.44
   },
-  "peak_month": "2010-03",
-  "peak_month_plays": 18,
-  "year_distribution": {"2009": 26, "2010": 36, "...": "..."}
+  "epoch_rates": {
+    "E1": {"plays": 3, "rate_per_1000": 0.37},
+    "E2": {"plays": 21, "rate_per_1000": 0.45}
+  },
+  "ltp": {
+    "long_returns": 5,
+    "max_gap_days": 412,
+    "days_since": 152,
+    "target_season_ratio": 0.47,
+    "lifespan_days": 3200
+  },
+  "spotify": {
+    "skip_rate": 0.05,
+    "completion_mean_ratio": 0.91,
+    "opener_rate": 0.12,
+    "within_session_repeats": 2
+  }
 }
 ```
 
-**`chunk_rates` field:** list of chunks in which this track appeared, sorted chronologically.
-`share` = track plays / chunk total plays — the normalized attention metric, corrected for
-your overall listening volume in that period. `density_rank` = this chunk's density
-percentile among all chunks (0 = quietest, 1 = most intense); lets you read whether a
-track tended to appear during high-activity or low-activity periods.
+`ltp` is `null` if the track doesn't qualify. `spotify` fields are `null` if
+`spotify_signals` table is absent.
 
 ### Trajectory types
 
-| Type | Definition | Behavioral signature |
-|------|-----------|---------------------|
-| `FLASH_BINGE` | ≥50% of plays in first 30 days | Highest ppd, highest repeat rate. Short-lived. |
-| `DISCOVERY_HEAVY` | ≥60% in first 90 days | Intense initial engagement, moderate lifespan |
-| `FRONT_LOADED` | ≥65% in first quartile of lifespan | "Bright burns." High session intensity, decaying rate |
-| `PERENNIAL_RETURN` | ≥3 rediscoveries + q4 ≥ 15% | Low repeat rate, spread across many distinct days. Durable. |
-| `SLOW_BURN` | q4 ≥ q1×0.8, ≥2 rediscoveries | Grows over time. Often late-discovered tracks. |
-| `REDISCOVERY` | ≥2 gap-return events, moderate distribution | Gap-then-cluster pattern without sustained perennial quality |
-| `DIFFUSE` | None of the above | No clear temporal shape |
+| Type | Signature |
+|---|---|
+| `FLASH_BINGE` | >= 50% of plays in first 30 days |
+| `DISCOVERY_HEAVY` | >= 60% of plays in first 90 days |
+| `FRONT_LOADED` | >= 65% of plays in first quarter of lifespan |
+| `PERENNIAL_RETURN` | >= 3 rediscoveries AND >= 15% of plays in final quarter |
+| `SLOW_BURN` | q4 >= 80% of q1 AND >= 2 rediscoveries (gradual deepening) |
+| `REDISCOVERY` | >= 2 rediscoveries (periodic revival, not sustained) |
+| `DIFFUSE` | no dominant pattern |
+
+Priority is checked in order: FLASH_BINGE first, DIFFUSE last.
 
 ### Key methodological concepts
 
-**Chunk segmentation and attention share** (`chunks`, `chunk_rates`): The listening
-history is segmented into contiguous chunks by gap threshold τ — a data-derived value
-(default: 80th percentile of inter-play gaps) that lets natural breaks in your behavior
-define the unit, not the calendar. Each chunk is its own denominator: `share` =
-track plays in chunk / chunk total plays. This normalizes for your listening volume,
-so a track commanding 4% of attention during a 2000-play chunk is directly comparable
-to 4% during a 200-play chunk.
+**Long-delay true positive (LTP)**: A track you reliably return to after extended absence.
+Qualifies if it has >= `--min-returns` (default 2) gaps of >= `--gap-days` (default 180) days
+between consecutive plays, and >= `--min-plays` (default 5) total plays.
 
-τ is fully tunable. Small τ (2–3 days) produces session-level chunks; large τ (60+ days)
-produces era-level chunks. Running the engine at multiple τ values reveals interacting
-scopes: a track may dominate individual sessions (high share at τ=2) but disappear
-entirely across eras (zero chunks at τ=60), or vice versa — a persistent background
-presence that never peaks.
+**Epoch detection**: Contiguous months where the full corpus has >= `--epoch-min-plays`
+(default 30) plays/month form a listening epoch. Always computed from the full corpus, even
+in `--artist` mode. Per-track `epoch_rates` show plays-per-1000-corpus-plays in each epoch.
 
-`density_rank` in each chunk_rates entry (0–1 percentile of chunk density) tells you
-whether a track's appearances cluster in your high-activity or low-activity periods —
-a further dimension of its retrieval signature.
+**Burst ratio**: Fraction of total plays occurring within the first 30 (or 90) days of
+a track's lifespan. `burst_ratio_30 = 0.80` means 80% of all listens were in the first month.
 
-**Gap distribution as retrieval signature** (`gap_stats`): The distribution of
-inter-play gaps — not just their count — encodes what a track *does* for the listener.
-A gap represents the interval between a retrieval event (playing now) and the next
-retrieval demand (playing again). The shape of this distribution is the track's
-phenomenological fingerprint:
+**Gap skew**: Pearson skewness of the gap distribution (3 * (mean - median) / std). Positive
+skew = most gaps are short, with occasional long ones (binge + rare returns). Negative skew =
+gaps are unusually consistent.
 
-| Pattern | mean | skew | Interpretation |
-|---------|------|------|----------------|
-| Consistent cadence | low–mid | near 0 | Stable, context-independent effect; reliable retrieval |
-| Variable symmetric | any | near 0, high std | Mood-cycling; effect is real but not time-locked |
-| Binge-then-ignore | low mean | high + | Front-loaded effect; re-sought immediately then abandoned |
-| Latent/contextual | high mean | very high + | Context-dependent; retrieved only under specific memory-cue conditions |
+**Rediscovery**: A gap >= `--gap-days` days followed by a return. `cluster_size` is how many
+plays occurred within 30 days of the return.
 
-`pct_long` (fraction of gaps > 180 days) is the direct rate of "return after
-absence" — a track-level signal of durability independent of total play count.
+**Quartile distribution (q1/q4)**: Fraction of plays in the first/last quarter of the track's
+lifespan. `q1=0.70` = front-loaded. `q4=0.40` = sustained recent interest.
 
-`gap_skew_vs_returns` and `gap_skew_vs_span` in the correlations block show
-whether high-skew tracks (context-dependent) tend to have more or fewer long-term
-returns in your catalog — this is listener-specific and interpretively significant.
+**Season weight in playlist scoring**: When `--months` is provided, `target_season_ratio`
+(fraction of plays in target months) contributes 30% of the playlist score. When `--months`
+is omitted, that weight is redistributed proportionally to the other components.
 
-**Session fingerprint**: `plays_per_active_day` and `repeat_rate` distinguish
-burn behavior (dense sessions, re-plays) from perennial behavior (one play per
-day, spread across months). Late-night percentage adds context for solitary/
-immersive vs. background/social listening.
+## Step 3 -- Interpreting results
 
-**Early-binge prediction**: `burst_ratio_30` (fraction of total plays in first
-30 days) correlates positively with total count but *negatively* with lifespan
-and return frequency. The strength of this effect is artist-specific and
-listener-specific (illustrative values: Muse r=-0.43, Radiohead r=-0.19 — yours
-will differ). Report the actual r values from the run rather than citing these.
+### Listening autobiography
 
-**Late discovery effect**: Tracks first played ≥60 days after their album's
-first play tend to have higher q4 (recent-quartile) concentration — they
-avoided the binge-decay cycle.
+- `overview`: span, volume, avg engagement
+- `year_by_year`: obsessions (artists > 10% of that year's plays) reveal phase shifts
+- `epochs`: high-density listening periods; gap between epochs = life transitions
+- `clock` + `seasonal`: listening context (late night = focused listening vs. background)
 
----
+### Trajectory analysis
 
-## Step 3 — Interpreting results
+Read `trajectory_summary` first for the catalog-level distribution, then `trajectory_type_stats`
+for averages per type.
 
-### For autobiography (taste engine)
+For a single artist (`--artist`), focus on:
+- Which trajectory types dominate (perennial vs front-loaded = deep catalog vs. album cycles)
+- `discovery_latency`: deep cuts found long after initial album exposure
+- `correlations`: whether early binges predict longevity (negative `burst30_vs_span` = binge
+  tracks tend not to last; positive = sustained engagement follows initial bursts)
 
-```python
-import json
-with open("taste_output.json") as f:
-    data = json.load(f)
+### Playlist output
 
-# Quick overview
-ov = data["overview"]
-print(f"{ov['total_plays']:,} plays over {ov['span_years']} years")
-
-# Top artists
-for a in data["top_artists"][:10]:
-    print(a["artist"], a["plays"])
-```
-
-### For trajectory analysis
-
-```python
-import json
-with open("muse_trajectory.json") as f:
-    data = json.load(f)
-
-# Trajectory distribution
-for traj, stats in data["trajectory_type_stats"].items():
-    print(f"{traj}: n={stats['count']} avg_ppd={stats['avg_ppd']}")
-
-# Find perennials
-perennials = [t for t in data["tracks"] if t["trajectory"] == "PERENNIAL_RETURN"]
-for t in sorted(perennials, key=lambda x: -x["q4"])[:10]:
-    print(f"{t['track']}: q4={t['q4']:.0%}, returns={t['long_returns']}")
-
-# Cross-chunk attention share for a specific track
-track = next(t for t in data["tracks"] if t["track"] == "Hysteria")
-for cr in track["chunk_rates"]:
-    print(f"  {cr['chunk_name']} ({cr['chunk_start']}): "
-          f"share={cr['share']:.1%} plays={cr['track_plays']}/{cr['chunk_total']} "
-          f"density_rank={cr['density_rank']:.2f}")
-
-# Binge → outcome correlations
-c = data["correlations"]
-print(f"burst_30 → lifespan: r={c['burst30_vs_span']}")
-if "gap_skew_vs_returns" in c:
-    print(f"gap_skew → returns:  r={c['gap_skew_vs_returns']}")
-    print(f"gap_skew → lifespan: r={c['gap_skew_vs_span']}")
-
-# Gap distribution fingerprints — find context-dependent (high skew) tracks
-# High skew = binge-ignore or latent/contextual retrieval pattern
-latent = [t for t in data["tracks"]
-          if t["gap_stats"]["n_gaps"] >= 5 and (t["gap_stats"]["skew"] or 0) > 2.0]
-for t in sorted(latent, key=lambda x: -x["gap_stats"]["skew"])[:10]:
-    gs = t["gap_stats"]
-    print(f"{t['track']}: skew={gs['skew']} median={gs['median_days']}d pct_long={gs['pct_long']:.0%}")
-
-# Stable retrievers: low skew, meaningful play count
-stable = [t for t in data["tracks"]
-          if t["gap_stats"]["n_gaps"] >= 5
-          and abs(t["gap_stats"]["skew"] or 99) < 0.8
-          and t["total_plays"] >= 10]
-for t in sorted(stable, key=lambda x: x["gap_stats"]["std_days"])[:10]:
-    gs = t["gap_stats"]
-    print(f"{t['track']}: skew={gs['skew']} mean={gs['mean_days']}d std={gs['std_days']}d")
-```
-
----
+With `--n 50 --months 3,4,5`, the playlist is filtered to LTP tracks that:
+- Have been rested >= `--rest-min-days` (default 45) days
+- Have >= `--season-ratio-min` (default 0.30) of plays in target months
+- Score highest on: returns (35%), season affinity (30%), depth (20%), rest (15%)
+- Capped at `--max-per-artist` (default 4) tracks per artist
 
 ## Tunable thresholds
 
-### Taste engine (in script header)
+### consolidate.py (in script header)
 
 | Constant | Default | Effect |
-|----------|---------|--------|
-| `LONG_GAP_DAYS` | 180 | Gap threshold for LTP |
-| `MIN_RETURNS_FOR_LTP` | 2 | Min returns for LTP set |
-| `TARGET_SEASON_MONTHS` | `{3,4,5}` | Target season month set (change to tune playlist to any season) |
-| `TARGET_SEASON_RATIO_MIN` | 0.30 | Min fraction of plays in target season to qualify for playlist (set to 0.0 to disable) |
-| `W_SEASON / W_RETURNS / W_DEPTH / W_REST` | 0.30/0.35/0.20/0.15 | Playlist scoring weights; W_SEASON boosts tracks matching target season |
+|---|---|---|
+| `MERGE_WINDOW_SEC` | 300 | ±5 min window for Last.fm/Spotify merge matching |
+| `SKIP_MS_THRESHOLD` | 30000 | Spotify plays under 30s marked as skips |
 
-### Trajectory engine (in script or via CLI)
+### engine.py analyze (CLI flags)
 
-| Constant / Flag | Default | Effect |
-|----------|---------|--------|
-| `--tau` | derived | Gap threshold in days for chunk segmentation. Omit to use data-derived default. |
-| `--tau-percentile` | 0.80 | Percentile of inter-play gap distribution used to derive τ when `--tau` not set. Lower = more chunks; higher = fewer. |
-| `LONG_GAP_DAYS` | 180 | Gap threshold for rediscovery detection |
-| `BURN_Q1_THRESHOLD` | 0.65 | Q1 fraction to classify as FRONT_LOADED |
-| `PERENNIAL_Q4_THRESHOLD` | 0.15 | Q4 fraction for PERENNIAL_RETURN |
-| `PERENNIAL_MIN_RETURNS` | 4 | Min 180d+ returns for perennial |
-| `FLASH_BINGE_30D` | 0.50 | 30-day burst ratio for flash binge |
+| Flag | Default | Effect |
+|---|---|---|
+| `--gap-days` | 180 | Gap threshold for LTP detection and rediscovery tagging |
+| `--min-plays` | 5 | Minimum plays for a track to appear in per-track analysis |
+| `--min-returns` | 2 | Minimum long-gap returns to qualify as LTP |
+| `--epoch-min-plays` | 30 | Monthly plays threshold for epoch detection |
+| `--rest-min-days` | 45 | Minimum days since last play for playlist inclusion |
+| `--season-ratio-min` | 0.30 | Minimum fraction of plays in target months for playlist |
+| `--max-per-artist` | 4 | Max tracks per artist in playlist output |
+| `--refdate` | today | Reference date for days_since, burst ratios |
+| `--months` | (none) | Target months e.g. `3,4,5` for spring; omit for season-agnostic run |
 
----
+### engine.py signals (CLI flags)
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--min-plays` | 2 | Min Spotify plays for a track to appear in signals |
+| `--session-gap-minutes` | 30 | Gap that defines session boundary |
 
 ## Expected runtime
 
-| Scrobble count | Taste engine | Trajectory (1 artist) | Trajectory (full) |
-|----------------|-------------|----------------------|-------------------|
-| <20k           | <5s         | <3s                  | <10s              |
-| 20k–100k       | 5–30s       | 3–15s                | 30–120s           |
-| 100k+          | 30–90s      | 15–60s               | 2–5min            |
-
-No external API calls. Fully offline. All stdlib.
+| Operation | Time |
+|---|---|
+| `consolidate.py` (full rebuild) | ~5s |
+| `engine.py signals` | <1s |
+| `engine.py analyze` (full catalog, 84k plays) | ~15s |
+| `engine.py analyze --artist "..."` | ~5s |

@@ -1355,6 +1355,153 @@ def cmd_playlist(args: argparse.Namespace) -> None:
         print(f"\nSaved: {args.out}")
 
 
+# ── Profile subcommand ────────────────────────────────────────────────────────
+
+def cmd_profile(args: argparse.Namespace) -> None:
+    """
+    Compute a corpus feasibility map for use by a calling LLM before invoking
+    `playlist`. Answers: what parameter combinations are actually viable given
+    this user's listening data?
+    """
+    ref_date = datetime.strptime(args.refdate, "%Y-%m-%d") if args.refdate else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    con           = open_db(args.db)
+    spotify_sigs  = load_spotify_signals(con)
+    library_saved = load_library_tracks(con)
+    all_plays     = load_plays(con)
+    con.close()
+
+    enrich(all_plays, ref_date, None)
+    track_groups = group_plays_by_track(all_plays)
+
+    REST_THRESHOLDS   = [14, 30, 90, 180, 365]
+    SEASON_THRESHOLDS = {
+        "spring": {3, 4, 5},
+        "summer": {6, 7, 8},
+        "fall":   {9, 10, 11},
+        "winter": {12, 1, 2},
+    }
+    SEASON_MIN_RATIO = 0.20
+
+    tracks = []
+    for (artist, track), info in track_groups.items():
+        timestamps = info["timestamps"]
+        n = len(timestamps)
+        if n < args.min_plays:
+            continue
+        if (timestamps[-1] - timestamps[0]).days < 1:
+            continue
+
+        gap_stats    = compute_gaps(timestamps, 180)
+        long_returns = sum(1 for g in gap_stats["gaps"] if g >= 180)
+        temporal     = compute_temporal(timestamps, ref_date, None)
+        trajectory   = classify_trajectory(
+            temporal["burst_ratio_30"], temporal["burst_ratio_90"],
+            temporal["q1"], temporal["q4"], long_returns, 0,
+        )
+        sp_row    = spotify_sigs.get((artist.lower(), track.lower()))
+        skip_rate = sp_row.get("skip_rate") if sp_row else None
+        saved     = (artist.lower(), track.lower()) in library_saved
+
+        # per-season ratio
+        season_ratios = {}
+        for sname, months in SEASON_THRESHOLDS.items():
+            season_plays = sum(1 for ts in timestamps if ts.month in months)
+            season_ratios[sname] = season_plays / n
+
+        tracks.append({
+            "artist":       artist,
+            "days_since":   (ref_date - timestamps[-1]).days,
+            "trajectory":   trajectory,
+            "skip_rate":    skip_rate,
+            "saved":        saved,
+            "has_signals":  sp_row is not None,
+            "season_ratios": season_ratios,
+        })
+
+    total = len(tracks)
+    saved_total = sum(1 for t in tracks if t["saved"])
+
+    # --- candidate pools by rest threshold ---
+    pools: dict[int, dict] = {}
+    for r in REST_THRESHOLDS:
+        rested  = [t for t in tracks if t["days_since"] >= r]
+        s_rested = [t for t in rested if t["saved"]]
+        pools[r] = {"all": len(rested), "saved": len(s_rested)}
+
+    # --- trajectory distribution ---
+    traj_counts = dict(Counter(t["trajectory"] for t in tracks))
+
+    # --- skip rate percentiles (tracks with signal only) ---
+    skip_rates = sorted(t["skip_rate"] for t in tracks if t["skip_rate"] is not None)
+    n_sig = len(skip_rates)
+
+    def _pct(data, p):
+        if not data:
+            return None
+        i = int(len(data) * p)
+        return round(data[min(i, len(data) - 1)], 2)
+
+    skip_stats = {
+        "tracks_with_signal": n_sig,
+        "tracks_total":       total,
+        "coverage_pct":       round(n_sig / total * 100, 1) if total else 0,
+        "p25": _pct(skip_rates, 0.25),
+        "p50": _pct(skip_rates, 0.50),
+        "p75": _pct(skip_rates, 0.75),
+    }
+
+    # viable max-skip-rate cutoffs
+    skip_cutoffs = {}
+    for cut in [0.30, 0.50, 0.70]:
+        skip_cutoffs[cut] = sum(1 for r in skip_rates if r <= cut)
+
+    # --- seasonal affinity ---
+    season_affinity: dict[str, dict] = {}
+    for sname in SEASON_THRESHOLDS:
+        eligible = [t for t in tracks if t["season_ratios"][sname] >= SEASON_MIN_RATIO]
+        saved_elig = [t for t in eligible if t["saved"]]
+        season_affinity[sname] = {"all": len(eligible), "saved": len(saved_elig)}
+
+    # --- artist diversity ---
+    artist_counts = Counter(t["artist"] for t in tracks)
+    artists_total = len(artist_counts)
+    artists_multi = sum(1 for c in artist_counts.values() if c >= 2)
+
+    out = {
+        "ref_date":          ref_date.strftime("%Y-%m-%d"),
+        "corpus": {
+            "tracks_analyzed":  total,
+            "tracks_saved":     saved_total,
+            "artists":          artists_total,
+            "artists_multi_track": artists_multi,
+        },
+        "candidate_pools": {
+            f"rest_{r}d": pools[r] for r in REST_THRESHOLDS
+        },
+        "trajectory_distribution": traj_counts,
+        "skip_signal":    skip_stats,
+        "skip_cutoffs":   {f"max_{int(k*100)}pct": v for k, v in skip_cutoffs.items()},
+        "season_affinity": season_affinity,
+        "playlist_guidance": {
+            "recommended_min_rest": next(
+                (r for r in REST_THRESHOLDS if pools[r]["all"] >= 50), REST_THRESHOLDS[-1]
+            ),
+            "saved_viable_at_rest_90d": pools[90]["saved"] >= 20,
+            "skip_signal_meaningful":  n_sig >= 100,
+            "strongest_season":        max(season_affinity, key=lambda s: season_affinity[s]["all"]),
+        },
+    }
+
+    import json as _json
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            _json.dump(out, fh, indent=2)
+        print(f"Profile saved: {args.out}")
+    else:
+        print(_json.dumps(out, indent=2))
+
+
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1402,6 +1549,13 @@ def main() -> None:
     p_pl.add_argument("--refdate",         default=None,                 help="Reference date YYYY-MM-DD")
     p_pl.add_argument("--out",             default=None,                 help="Optional JSON output path")
 
+    # ── profile ──
+    p_pro = sub.add_parser("profile", help="Corpus feasibility map — run before playlist to inform parameter choices")
+    p_pro.add_argument("--db",        default="data/music.db")
+    p_pro.add_argument("--min-plays", type=int, default=5)
+    p_pro.add_argument("--refdate",   default=None, help="YYYY-MM-DD (default: today)")
+    p_pro.add_argument("--out",       default=None, help="Optional JSON output path")
+
     args = root.parse_args()
 
     if args.command == "signals":
@@ -1410,6 +1564,8 @@ def main() -> None:
         cmd_analyze(args)
     elif args.command == "playlist":
         cmd_playlist(args)
+    elif args.command == "profile":
+        cmd_profile(args)
 
 
 if __name__ == "__main__":

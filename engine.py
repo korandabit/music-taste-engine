@@ -1143,6 +1143,218 @@ def cmd_signals(args: argparse.Namespace) -> None:
     print(f"Done.  date_range={date_range[0]} -> {date_range[1]}  sessions={n_sessions:,}  tracks={len(rows):,}  completion={completion_source}")
 
 
+# ── Playlist subcommand ───────────────────────────────────────────────────────
+
+# Trajectory desirability weights (multiplier on composite score)
+_PL_TRAJ_WEIGHTS: dict[str, float] = {
+    "PERENNIAL_RETURN":  1.30,
+    "REDISCOVERY":       1.20,
+    "SLOW_BURN":         1.15,
+    "DIFFUSE":           0.90,
+    "DISCOVERY_HEAVY":   0.85,
+    "FRONT_LOADED":      0.80,
+    "FLASH_BINGE":       0.65,
+}
+
+# Energy preset → component weights {periodicity, engagement, depth, rest}
+_PL_ENERGY_PROFILES: dict[str, dict[str, float]] = {
+    "high":   {"w_periodicity": 0.15, "w_engagement": 0.35, "w_depth": 0.30, "w_rest": 0.20},
+    "medium": {"w_periodicity": 0.30, "w_engagement": 0.25, "w_depth": 0.20, "w_rest": 0.25},
+    "low":    {"w_periodicity": 0.40, "w_engagement": 0.15, "w_depth": 0.20, "w_rest": 0.25},
+}
+
+
+def score_candidates(
+    tracks: list[dict],
+    n: int,
+    energy: str = "medium",
+    min_rest_days: int = 30,
+    max_skip_rate: float = 0.70,
+    require_saved: bool = False,
+    max_per_artist: int = 3,
+    target_months: set | None = None,
+    season_ratio_min: float = 0.20,
+) -> list[dict]:
+    """
+    Score and rank all analyzed tracks for playlist selection.
+
+    Candidate pool: all tracks passing hard filters (rest, skip rate, saved flag,
+    season ratio). No LTP gate — rewards proven replay value via trajectory weights
+    and periodicity signal instead.
+
+    Score components (normalized 0–1 each):
+      periodicity  — long_returns / span_years  (returns-per-year, caps at 5/yr)
+      engagement   — completion_mean_ratio if available, else repeat_rate proxy
+      depth        — log(total_plays), caps at log(300)
+      rest         — days_since, caps at 730d
+
+    Final score = weighted sum × skip_multiplier × saved_multiplier × traj_weight
+    """
+    w = _PL_ENERGY_PROFILES.get(energy, _PL_ENERGY_PROFILES["medium"])
+
+    REST_CAP_DAYS   = 730
+    DEPTH_CAP_PLAYS = 300
+    PERIOD_CAP      = 5.0   # returns/year at which periodicity saturates
+
+    pool = []
+    for t in tracks:
+        if t["days_since"] < min_rest_days:
+            continue
+        if require_saved and not t.get("saved"):
+            continue
+        sp = t.get("spotify") or {}
+        skip_rate = sp.get("skip_rate")
+        if skip_rate is not None and skip_rate > max_skip_rate:
+            continue
+        if target_months and (t.get("ltp") or {}).get("target_season_ratio") is not None:
+            if (t["ltp"]["target_season_ratio"] or 0) < season_ratio_min:
+                continue
+        pool.append(t)
+
+    if not pool:
+        return []
+
+    def _score(t: dict) -> float:
+        sp = t.get("spotify") or {}
+
+        # periodicity: returns per year of listening span
+        span_yrs = max(t["span_days"] / 365.0, 0.5)
+        period_raw = t["long_returns"] / span_yrs
+        s_periodicity = min(period_raw / PERIOD_CAP, 1.0)
+
+        # engagement: prefer completion signal; fall back to session repeat_rate
+        completion = sp.get("completion_mean_ratio")
+        if completion is not None:
+            s_engagement = float(completion)
+        else:
+            s_engagement = min((t.get("session") or {}).get("repeat_rate", 0) * 2.0, 1.0)
+
+        # depth
+        s_depth = min(math.log1p(t["total_plays"]) / math.log1p(DEPTH_CAP_PLAYS), 1.0)
+
+        # rest / freshness
+        s_rest = min(t["days_since"] / REST_CAP_DAYS, 1.0)
+
+        base = (
+            w["w_periodicity"] * s_periodicity +
+            w["w_engagement"]  * s_engagement  +
+            w["w_depth"]       * s_depth        +
+            w["w_rest"]        * s_rest
+        )
+
+        # multipliers
+        skip_rate = sp.get("skip_rate")
+        skip_mult  = (1.0 - skip_rate * 0.6) if skip_rate is not None else 1.0
+        saved_mult = 1.15 if t.get("saved") else 1.0
+        traj_mult  = _PL_TRAJ_WEIGHTS.get(t.get("trajectory", ""), 1.0)
+
+        return base * skip_mult * saved_mult * traj_mult
+
+    pool.sort(key=lambda t: -_score(t))
+
+    selected: list[dict] = []
+    artist_counts: dict[str, int] = defaultdict(int)
+    for t in pool:
+        if artist_counts[t["artist"]] >= max_per_artist:
+            continue
+        selected.append({
+            "artist":     t["artist"],
+            "track":      t["track"],
+            "score":      round(_score(t), 4),
+            "trajectory": t.get("trajectory"),
+            "days_since": t["days_since"],
+            "skip_rate":  (t.get("spotify") or {}).get("skip_rate"),
+            "saved":      t.get("saved", False),
+        })
+        artist_counts[t["artist"]] += 1
+        if len(selected) >= n:
+            break
+
+    return selected
+
+
+def cmd_playlist(args: argparse.Namespace) -> None:
+    ref_date      = datetime.strptime(args.refdate, "%Y-%m-%d") if args.refdate else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    target_months = set(int(m) for m in args.months.split(",")) if args.months else None
+
+    con           = open_db(args.db)
+    spotify_sigs  = load_spotify_signals(con)
+    library_saved = load_library_tracks(con)
+    all_plays     = load_plays(con)
+    con.close()
+
+    enrich(all_plays, ref_date, target_months)
+    track_groups = group_plays_by_track(all_plays)
+
+    tracks: list[dict] = []
+    for (artist, track), info in track_groups.items():
+        timestamps = info["timestamps"]
+        n = len(timestamps)
+        if n < args.min_plays:
+            continue
+        if (timestamps[-1] - timestamps[0]).days < 1:
+            continue
+
+        gap_stats = compute_gaps(timestamps, 180)
+        long_returns = sum(1 for g in gap_stats["gaps"] if g >= 180)
+        temporal  = compute_temporal(timestamps, ref_date, target_months)
+        trajectory = classify_trajectory(
+            temporal["burst_ratio_30"], temporal["burst_ratio_90"],
+            temporal["q1"], temporal["q4"],
+            long_returns, 0,
+        )
+        sp_row  = spotify_sigs.get((artist.lower(), track.lower()))
+        spotify = {
+            "skip_rate":             sp_row.get("skip_rate")             if sp_row else None,
+            "completion_mean_ratio": sp_row.get("completion_mean_ratio") if sp_row else None,
+        }
+        tracks.append({
+            "artist":       artist,
+            "track":        track,
+            "total_plays":  n,
+            "span_days":    (timestamps[-1] - timestamps[0]).days,
+            "days_since":   (ref_date - timestamps[-1]).days,
+            "long_returns": long_returns,
+            "trajectory":   trajectory,
+            "session":      {"repeat_rate": temporal["repeat_rate"]},
+            "ltp":          {"target_season_ratio": temporal.get("target_season_ratio")},
+            "spotify":      spotify,
+            "saved":        (artist.lower(), track.lower()) in library_saved,
+        })
+
+    playlist = score_candidates(
+        tracks,
+        n              = args.n,
+        energy         = args.energy,
+        min_rest_days  = args.min_rest,
+        max_skip_rate  = args.max_skip_rate,
+        require_saved  = args.require_saved,
+        max_per_artist = args.max_per_artist,
+        target_months  = target_months,
+        season_ratio_min = args.season_ratio_min,
+    )
+
+    context_label = args.context or "playlist"
+    lines = [f"{t['artist']} — {t['track']}" for t in playlist]
+
+    print(f"\n=== {context_label.upper()} ({len(playlist)} tracks) ===\n")
+    for line in lines:
+        print(line)
+    print()
+    print("─" * 52)
+    print("Transfer to Spotify / Apple Music / Tidal / etc:")
+    print("  https://www.tuneyourmusic.com/transfer")
+    print()
+    print("Paste the list above, pick your destination, go.")
+    print("─" * 52)
+
+    if args.out:
+        import json as _json
+        with open(args.out, "w", encoding="utf-8") as fh:
+            _json.dump({"context": context_label, "tracks": playlist, "tracklist": lines}, fh, indent=2)
+        print(f"\nSaved: {args.out}")
+
+
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -1174,12 +1386,30 @@ def main() -> None:
     p_ana.add_argument("--season-ratio-min", type=float, default=0.30, help="Min target-season ratio for playlist")
     p_ana.add_argument("--max-per-artist",  type=int, default=4,   help="Max tracks per artist in playlist")
 
+    # ── playlist ──
+    p_pl = sub.add_parser("playlist", help="Score and output a ready-to-transfer playlist")
+    p_pl.add_argument("--db",              default="data/music.db")
+    p_pl.add_argument("--n",               type=int,   default=20,      help="Number of tracks")
+    p_pl.add_argument("--context",         default=None,                 help="Free-text label (e.g. 'Sunday drive')")
+    p_pl.add_argument("--energy",          default="medium",             help="high | medium | low  (scoring profile)")
+    p_pl.add_argument("--months",          default=None,                 help="Season filter e.g. 3,4,5")
+    p_pl.add_argument("--min-rest",        type=int,   default=30,       help="Min days since last play")
+    p_pl.add_argument("--max-skip-rate",   type=float, default=0.70,     help="Exclude tracks with skip_rate above this")
+    p_pl.add_argument("--require-saved",   action="store_true",          help="Only include library-saved tracks")
+    p_pl.add_argument("--max-per-artist",  type=int,   default=3,        help="Max tracks per artist")
+    p_pl.add_argument("--season-ratio-min", type=float, default=0.20,   help="Min target-season ratio when --months set")
+    p_pl.add_argument("--min-plays",       type=int,   default=5,        help="Min plays to consider a track")
+    p_pl.add_argument("--refdate",         default=None,                 help="Reference date YYYY-MM-DD")
+    p_pl.add_argument("--out",             default=None,                 help="Optional JSON output path")
+
     args = root.parse_args()
 
     if args.command == "signals":
         cmd_signals(args)
     elif args.command == "analyze":
         cmd_analyze(args)
+    elif args.command == "playlist":
+        cmd_playlist(args)
 
 
 if __name__ == "__main__":

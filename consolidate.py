@@ -292,12 +292,14 @@ def write_db(db_path: Path, plays, lib_tracks, lib_albums, playlist_rows):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv",         required=True,        help="Last.fm CSV export path")
-    ap.add_argument("--spotify-dir", default=None,         help="Directory containing StreamingHistory*.json, YourLibrary.json, Playlist1.json")
+    ap.add_argument("--spotify-dir", default=None,         help="Directory containing StreamingHistory*.json / Streaming_History_Audio_*.json")
+    ap.add_argument("--meta-dir",    default=None,         help="Directory containing YourLibrary.json and Playlist1.json (defaults to --spotify-dir)")
     ap.add_argument("--out",         default="data/music.db", help="Output SQLite path")
     args = ap.parse_args()
 
     csv_path     = Path(args.csv)
     spotify_dir  = Path(args.spotify_dir) if args.spotify_dir else None
+    meta_dir     = Path(args.meta_dir) if args.meta_dir else spotify_dir
     out_path     = Path(args.out)
 
     print("Loading Last.fm CSV...")
@@ -334,14 +336,14 @@ def main():
     lib_albums: list[dict] = []
     playlist_rows: list[dict] = []
 
-    if spotify_dir:
-        library_path = spotify_dir / "YourLibrary.json"
+    if meta_dir:
+        library_path = meta_dir / "YourLibrary.json"
         if library_path.exists():
             print("Loading Spotify library...")
             lib_tracks, lib_albums = load_library(library_path)
             print(f"  {len(lib_tracks):,} saved tracks, {len(lib_albums):,} saved albums")
 
-        playlist_path = spotify_dir / "Playlist1.json"
+        playlist_path = meta_dir / "Playlist1.json"
         if playlist_path.exists():
             print("Loading Spotify playlists...")
             playlist_rows = load_playlists(playlist_path)

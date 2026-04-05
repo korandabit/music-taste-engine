@@ -36,11 +36,12 @@ from pathlib import Path
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-LASTFM_DATE_FORMAT  = "%d %b %Y %H:%M"
-SPOTIFY_DATE_FORMAT = "%Y-%m-%d %H:%M"
-MIN_YEAR            = 2005   # drop Last.fm pre-scrobble artifacts
-MERGE_WINDOW_SEC    = 300    # ±5 min to consider a Spotify play == a Last.fm scrobble
-SKIP_MS_THRESHOLD   = 30_000 # Spotify plays under 30s counted as skips
+LASTFM_DATE_FORMAT   = "%d %b %Y %H:%M"
+SPOTIFY_DATE_FORMAT  = "%Y-%m-%d %H:%M"
+SPOTIFY_EXT_DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
+MIN_YEAR             = 2005   # drop Last.fm pre-scrobble artifacts
+MERGE_WINDOW_SEC     = 300    # ±5 min to consider a Spotify play == a Last.fm scrobble
+SKIP_MS_THRESHOLD    = 30_000 # Spotify plays under 30s counted as skips
 
 
 # ─── Parsing ──────────────────────────────────────────────────────────────────
@@ -71,25 +72,55 @@ def load_lastfm(path: Path) -> list[dict]:
     return plays
 
 
+def _parse_spotify_record(r: dict) -> dict | None:
+    """Normalise one record from either standard or extended Spotify format.
+    Returns None for non-music entries (podcasts, audiobooks, incognito)."""
+    # Extended format detection: has 'master_metadata_track_name'
+    if "master_metadata_track_name" in r:
+        if r.get("incognito_mode"):
+            return None
+        if not r.get("master_metadata_track_name"):  # podcast / audiobook
+            return None
+        try:
+            dt = datetime.strptime(r["ts"], SPOTIFY_EXT_DATE_FMT)
+        except (ValueError, KeyError):
+            return None
+        ms = r.get("ms_played", 0) or 0
+        skipped = r.get("skipped") or (ms < SKIP_MS_THRESHOLD)
+        return {
+            "source":    "spotify",
+            "ts":        dt,
+            "artist":    (r.get("master_metadata_album_artist_name") or "").strip(),
+            "album":     (r.get("master_metadata_album_album_name") or "").strip() or None,
+            "track":     (r.get("master_metadata_track_name") or "").strip(),
+            "ms_played": ms,
+            "is_skip":   1 if skipped else 0,
+        }
+    # Standard format
+    try:
+        dt = datetime.strptime(r["endTime"], SPOTIFY_DATE_FORMAT)
+    except (ValueError, KeyError):
+        return None
+    ms = r.get("msPlayed", 0) or 0
+    return {
+        "source":    "spotify",
+        "ts":        dt,
+        "artist":    r.get("artistName", "").strip(),
+        "album":     None,
+        "track":     r.get("trackName", "").strip(),
+        "ms_played": ms,
+        "is_skip":   1 if ms < SKIP_MS_THRESHOLD else 0,
+    }
+
+
 def load_spotify_plays(path: Path) -> list[dict]:
     with open(path, encoding="utf-8") as fh:
         raw = json.load(fh)
     plays = []
     for r in raw:
-        try:
-            dt = datetime.strptime(r["endTime"], SPOTIFY_DATE_FORMAT)
-        except (ValueError, KeyError):
-            continue
-        ms = r.get("msPlayed", 0)
-        plays.append({
-            "source":    "spotify",
-            "ts":        dt,
-            "artist":    r.get("artistName", "").strip(),
-            "album":     None,
-            "track":     r.get("trackName", "").strip(),
-            "ms_played": ms,
-            "is_skip":   1 if ms < SKIP_MS_THRESHOLD else 0,
-        })
+        rec = _parse_spotify_record(r)
+        if rec and rec["artist"] and rec["track"]:
+            plays.append(rec)
     return plays
 
 
@@ -275,7 +306,10 @@ def main():
 
     spotify_plays_all: list[dict] = []
     if spotify_dir:
-        history_files = sorted(glob.glob(str(spotify_dir / "StreamingHistory*.json")))
+        history_files = sorted(
+            glob.glob(str(spotify_dir / "StreamingHistory*.json")) +
+            glob.glob(str(spotify_dir / "Streaming_History_Audio_*.json"))
+        )
         if history_files:
             print(f"Loading Spotify streaming history ({len(history_files)} file(s))...")
             for hf in history_files:

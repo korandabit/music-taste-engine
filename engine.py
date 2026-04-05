@@ -116,6 +116,16 @@ def load_spotify_signals(con: sqlite3.Connection) -> dict:
     }
 
 
+def load_library_tracks(con: sqlite3.Connection) -> set:
+    """Returns set of (artist_lower, track_lower) for tracks saved in the user's library."""
+    if not table_exists(con, "library_tracks"):
+        return set()
+    return {
+        (r["artist"].lower(), r["track"].lower())
+        for r in con.execute("SELECT artist, track FROM library_tracks").fetchall()
+    }
+
+
 # ── Layer 2: Per-record derived fields ───────────────────────────────────────
 
 def enrich(plays: list[dict], ref_date: datetime, target_months: set | None) -> list[dict]:
@@ -592,9 +602,10 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
     min_returns   = args.min_returns
 
     print(f"Opening {args.db} ...")
-    con          = open_db(args.db)
-    spotify_sigs = load_spotify_signals(con)
-    has_spotify  = bool(spotify_sigs)
+    con           = open_db(args.db)
+    spotify_sigs  = load_spotify_signals(con)
+    has_spotify   = bool(spotify_sigs)
+    library_saved = load_library_tracks(con)
 
     print("Loading plays ...")
     all_plays = load_plays(con)
@@ -719,6 +730,7 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
             "epoch_rates": epoch_rates,
             "ltp":         ltp,
             "spotify":     spotify,
+            "saved":       (artist.lower(), track.lower()) in library_saved,
         }
         tracks.append(rec)
         if ltp:
@@ -838,23 +850,46 @@ def _print_analyze_summary(out: dict) -> None:
 
 # ── Signals subcommand (ported from spotify_signal_engine.py) ─────────────────
 
+_SIG_EXT_DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _sig_parse_record(r: dict) -> dict | None:
+    """Normalise one record from either standard or extended Spotify format."""
+    if "master_metadata_track_name" in r:
+        if r.get("incognito_mode") or not r.get("master_metadata_track_name"):
+            return None
+        try:
+            ts = datetime.strptime(r["ts"], _SIG_EXT_DATE_FMT)
+        except (ValueError, KeyError):
+            return None
+        return {
+            "ts":     ts,
+            "artist": (r.get("master_metadata_album_artist_name") or "").strip(),
+            "track":  (r.get("master_metadata_track_name") or "").strip(),
+            "ms":     r.get("ms_played") or 0,
+        }
+    raw = r.get("endTime", "")
+    try:
+        ts = datetime.strptime(raw.strip(), _SIG_DATE_FMT)
+    except ValueError:
+        return None
+    return {
+        "ts":     ts,
+        "artist": r.get("artistName", "").strip(),
+        "track":  r.get("trackName", "").strip(),
+        "ms":     r.get("msPlayed", 0),
+    }
+
+
 def _sig_load_history(paths: list[str]) -> list[dict]:
     plays = []
     for path in paths:
         with open(path, encoding="utf-8") as fh:
             records = json.load(fh)
         for r in records:
-            raw = r.get("endTime", "")
-            try:
-                ts = datetime.strptime(raw.strip(), _SIG_DATE_FMT)
-            except ValueError:
-                continue
-            plays.append({
-                "ts":     ts,
-                "artist": r.get("artistName", "").strip(),
-                "track":  r.get("trackName", "").strip(),
-                "ms":     r.get("msPlayed", 0),
-            })
+            rec = _sig_parse_record(r)
+            if rec and rec["artist"] and rec["track"]:
+                plays.append(rec)
     plays.sort(key=lambda p: p["ts"])
     return plays
 

@@ -594,6 +594,36 @@ def compute_trajectory_stats(tracks: list[dict]) -> dict:
 
 # ── Layer 11: Output assembly + analyze subcommand ───────────────────────────
 
+def _auto_calibrate(total_plays: int, span_days: int, args: argparse.Namespace) -> dict | None:
+    """Lower thresholds for thin corpora. Returns calibration dict or None if defaults are fine."""
+    span_years = span_days / 365.25
+    if total_plays >= 20000 and span_years >= 3:
+        return None
+    cal = {"reason": [], "original": {}, "adjusted": {}}
+    # Only adjust values the user didn't explicitly set (argparse defaults)
+    defaults = {"min_plays": 5, "min_returns": 2, "epoch_min_plays": 30}
+    adjustments = {}
+    if total_plays < 10000:
+        adjustments = {"min_plays": 3, "min_returns": 1, "epoch_min_plays": 10}
+        cal["reason"].append(f"thin corpus ({total_plays:,} plays)")
+    elif total_plays < 20000:
+        adjustments = {"min_plays": 3, "min_returns": 1, "epoch_min_plays": 15}
+        cal["reason"].append(f"moderate corpus ({total_plays:,} plays)")
+    if span_years < 3:
+        adjustments["min_returns"] = 1
+        adjustments["epoch_min_plays"] = min(adjustments.get("epoch_min_plays", 30), 15)
+        cal["reason"].append(f"short span ({span_years:.1f} years)")
+    for key, new_val in adjustments.items():
+        cur_val = getattr(args, key)
+        if cur_val == defaults[key]:
+            cal["original"][key] = cur_val
+            cal["adjusted"][key] = new_val
+            setattr(args, key, new_val)
+    if not cal["adjusted"]:
+        return None
+    return cal
+
+
 def cmd_analyze(args: argparse.Namespace) -> dict:
     ref_date      = datetime.strptime(args.refdate, "%Y-%m-%d") if args.refdate else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     target_months = set(int(m) for m in args.months.split(",")) if args.months else None
@@ -620,6 +650,16 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
         print("No plays found.")
         con.close()
         return {}
+
+    # P1: auto-calibrate thresholds for thin corpora
+    corpus_span = (max(p["ts"] for p in all_plays) - min(p["ts"] for p in all_plays)).days
+    calibration = _auto_calibrate(len(all_plays), corpus_span, args)
+    if calibration:
+        min_plays   = args.min_plays
+        min_returns = args.min_returns
+        print(f"  Auto-calibrated for {', '.join(calibration['reason'])}:")
+        for k, v in calibration["adjusted"].items():
+            print(f"    {k}: {calibration['original'][k]} -> {v}")
 
     print(f"  ref_date={ref_date.date()}  gap_days={gap_days}  target_months={sorted(target_months) if target_months else None}")
 
@@ -764,6 +804,7 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
             "artist_filter": args.artist,
             "months_filter": sorted(target_months) if target_months else None,
             "has_spotify":   has_spotify,
+            "corpus_calibration": calibration,
             "config": {
                 "gap_days":        gap_days,
                 "min_plays":       min_plays,
@@ -797,6 +838,11 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
         print(f"Output: {args.out}")
 
     _print_analyze_summary(output)
+
+    if args.summary:
+        _write_summary_report(output, args.summary)
+        print(f"Summary report: {args.summary}")
+
     return output
 
 
@@ -846,6 +892,137 @@ def _print_analyze_summary(out: dict) -> None:
             print(f"  {i:>2}. {r['artist']} — {r['track']}")
             print(f"       score {r['score']} · {r['long_returns']} returns · {r['days_since']}d rest{tsr_str}")
     print()
+
+
+def _write_summary_report(out: dict, path: str) -> None:
+    """Write a standalone human-readable markdown report from analyze output."""
+    o = out["overview"]
+    m = out["meta"]
+    lines: list[str] = []
+
+    def w(s=""): lines.append(s)
+
+    w(f"# Listening Analysis — {m['ref_date']}")
+    if m.get("artist_filter"):
+        w(f"\n**Artist:** {m['artist_filter']}")
+    w()
+
+    # Calibration notice
+    cal = m.get("corpus_calibration")
+    if cal:
+        w(f"> **Auto-calibrated** for {', '.join(cal['reason'])}. "
+          f"Adjusted: {', '.join(f'{k} {cal['original'][k]}→{v}' for k, v in cal['adjusted'].items())}.")
+        w()
+
+    # Overview
+    w("## Overview")
+    w()
+    w(f"| Metric | Value |")
+    w(f"|---|---|")
+    w(f"| Total plays | {o['total_plays']:,} |")
+    w(f"| Unique artists | {o['unique_artists']:,} |")
+    w(f"| Unique tracks | {o['unique_tracks']:,} |")
+    w(f"| Span | {o['span_years']} years ({o['first_scrobble']} → {o['last_scrobble']}) |")
+    w(f"| Avg plays/day | {o['avg_plays_per_day']} |")
+    w(f"| Spotify signals | {'yes' if m['has_spotify'] else 'no'} |")
+    w()
+
+    c = out["clock"]
+    w(f"Peak listening hour: **{c['peak_hour']}:00** · Late night (10pm–4am): **{c['late_night_pct']}%**")
+    w()
+
+    # Epochs
+    if out["epochs"]:
+        w("## Listening Epochs")
+        w()
+        w("High-density listening periods (sustained monthly activity above threshold):")
+        w()
+        w("| Epoch | Period | Duration | Plays |")
+        w("|---|---|---|---|")
+        for e in out["epochs"]:
+            w(f"| {e['name']} | {e['start']} → {e['end']} | {e['months']} months | {e['total_plays']:,} |")
+        w()
+
+    # Trajectory distribution
+    w("## Trajectory Distribution")
+    w()
+    w("Each track is classified by how engagement unfolds over time:")
+    w()
+    w("| Trajectory | Count | Avg Plays | Avg Span | Q1 | Q4 |")
+    w("|---|---|---|---|---|---|")
+    for traj, cnt in sorted(out["trajectory_summary"].items(), key=lambda x: -x[1]):
+        st = out["trajectory_type_stats"].get(traj, {})
+        w(f"| {traj} | {cnt} | {st.get('avg_plays', 0):.0f} | "
+          f"{st.get('avg_span_days', 0):.0f}d | "
+          f"{st.get('avg_q1', 0):.2f} | {st.get('avg_q4', 0):.2f} |")
+    w()
+
+    # Trajectory type glossary
+    w("**Types:** FLASH_BINGE = intense burst, fades fast · "
+      "FRONT_LOADED = heavy early, tapers · "
+      "PERENNIAL_RETURN = sustained returns over years · "
+      "SLOW_BURN = grows over time · "
+      "REDISCOVERY = forgotten then found again · "
+      "DIFFUSE = no strong pattern")
+    w()
+
+    # Correlations
+    if out.get("correlations"):
+        c2 = out["correlations"]
+        w("## Binge → Outcome Correlations")
+        w()
+        w(f"Among tracks with ≥{c2['min_plays']} plays (n={c2['n']}):")
+        w()
+        w(f"- Early binge → total plays: r = **{c2['burst30_vs_total']:+.3f}**")
+        w(f"- Early binge → lifespan: r = **{c2['burst30_vs_span']:+.3f}**")
+        w(f"- Early binge → long returns: r = **{c2['burst30_vs_returns']:+.3f}**")
+        w()
+        if c2['burst30_vs_span'] < -0.1:
+            w("*Tracks you binge early tend not to last — initial intensity doesn't predict longevity.*")
+        elif c2['burst30_vs_span'] > 0.1:
+            w("*Early engagement predicts sustained interest — your binges tend to become long-term favorites.*")
+        w()
+
+    # LTP tracks
+    ltp = out.get("ltp_tracks", [])
+    w(f"## Long-Delay True Positives ({len(ltp)} tracks)")
+    w()
+    w("Tracks you reliably return to after extended absence — the strongest signal of genuine preference:")
+    w()
+    if ltp:
+        w("| Artist | Track | Returns | Max Gap | Days Resting |")
+        w("|---|---|---|---|---|")
+        for r in ltp[:20]:
+            w(f"| {r['artist']} | {r['track']} | {r['long_returns']} | {r['max_gap_days']}d | {r['days_since']}d |")
+        if len(ltp) > 20:
+            w(f"\n*...and {len(ltp) - 20} more.*")
+    else:
+        w("*No tracks qualified. This usually means the corpus is too short for 180-day gaps to form.*")
+    w()
+
+    # Top rediscoveries
+    rediscovery_tracks = [t for t in out.get("tracks", []) if t["trajectory"] == "REDISCOVERY"]
+    if rediscovery_tracks:
+        w("## Notable Rediscoveries")
+        w()
+        top_redis = sorted(rediscovery_tracks, key=lambda t: -max((r["gap_days"] for r in t["rediscoveries"]), default=0))[:10]
+        for t in top_redis:
+            best = max(t["rediscoveries"], key=lambda r: r["gap_days"])
+            w(f"- **{t['artist']} — {t['track']}**: {best['gap_days']}d gap, "
+              f"returned {best['return_date']} (cluster of {best['cluster_size']} plays)")
+        w()
+
+    # Playlist
+    if out.get("playlist"):
+        pl = out["playlist"]
+        w(f"## Playlist ({len(pl)} tracks)")
+        w()
+        for i, r in enumerate(pl, 1):
+            w(f"{i}. {r['artist']} — {r['track']}")
+        w()
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
 
 
 # ── Signals subcommand (ported from spotify_signal_engine.py) ─────────────────
@@ -1532,6 +1709,7 @@ def main() -> None:
     p_ana.add_argument("--rest-min-days",   type=int, default=45,  help="Min days since last play for playlist")
     p_ana.add_argument("--season-ratio-min", type=float, default=0.30, help="Min target-season ratio for playlist")
     p_ana.add_argument("--max-per-artist",  type=int, default=4,   help="Max tracks per artist in playlist")
+    p_ana.add_argument("--summary",         default=None,            help="Write human-readable markdown summary to this path")
 
     # ── playlist ──
     p_pl = sub.add_parser("playlist", help="Score and output a ready-to-transfer playlist")

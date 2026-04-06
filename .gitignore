@@ -3,10 +3,7 @@ ledger.db
 CLAUDE.md
 
 # Archive — kept locally, not tracked
-archive/SKILL-v1.md
-archive/SKILL-v2.md
-archive/spotify_signal_engine_spec.md
-archive/lastfm_taste_engine.zip
+archive/
 
 # Source data — stays local, not in repo
 data/

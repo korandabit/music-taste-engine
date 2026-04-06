@@ -1,72 +1,129 @@
 ---
 name: music-data-engine
 description: >
-  Unified music listening data analysis across Last.fm and Spotify.
-  **consolidate.py** — One-time ingest: merges Last.fm CSV + Spotify exports
-  (standard or Extended Streaming History) into music.db (SQLite). Run once,
-  or after adding new exports.
-  **engine.py** — All analysis. Four subcommands:
-  `signals` computes Spotify behavioral signals (skip rate, completion ratio,
-  session position) and writes them to music.db.
-  `analyze` reads music.db and produces full JSON: temporal overview, listening
-  clock, seasonal distribution, top lists, year-by-year obsessions, epoch
-  detection, per-track trajectory classification (FLASH_BINGE / DISCOVERY_HEAVY /
-  FRONT_LOADED / PERENNIAL_RETURN / SLOW_BURN / REDISCOVERY / DIFFUSE), LTP
-  detection (long-delay true positives), playlist scoring, correlations, and
-  Spotify enrichment when available.
-  `profile` computes a corpus feasibility map — candidate pool sizes, trajectory
-  distribution, skip signal coverage, seasonal affinity — for use by the calling
-  LLM before invoking `playlist`.
-  `playlist` produces a scored, ready-to-transfer tracklist with a
-  tuneyourmusic.com/transfer link and paste instructions.
-  Trigger when user uploads music data files or asks about listening history,
-  music taste, playlist generation, artist deep-dive, trajectory analysis,
-  or Spotify library/playlist data.
+  Behavioral music analysis from Last.fm/Spotify history: trajectory
+  classification (binge vs perennial vs rediscovery), long-delay true
+  positives, epoch-normalized engagement, behavioral playlist scoring.
+  Trigger on: listening habits, music taste, favorite artists/tracks,
+  playlists, listening trends, "what do I actually love".
+  Tool calls — full analysis: `engine.py analyze --db data/music.db --out
+  out.json`. Single artist: add `--artist "Radiohead"`. Spring seasonal: add
+  `--months 3,4,5`. Playlist (run profile first): `engine.py profile --db
+  data/music.db` then `engine.py playlist --db data/music.db --n 50 --months
+  3,4,5 --energy high --context "road trip"`. Playlist supports `--min-rest`,
+  `--max-skip-rate`, `--require-saved`, `--max-per-artist`. Spotify signals
+  refresh (rare): `engine.py signals --db data/music.db --spotify-dir data`.
 ---
 
 # Music Data Engine -- Skill Instructions
 
-## Asset locations
+A behavioral music analysis engine. Unlike streaming-service dashboards that
+show top tracks and play counts, this tool classifies *how* you listen —
+identifying trajectory archetypes (binge vs. perennial vs. rediscovery),
+long-delay true positives (tracks you reliably return to after months of
+absence), and epoch-normalized engagement patterns across years of history.
+Playlists are scored on your own behavioral signals, not collaborative
+filtering or audio features.
 
-| File | Location |
+The bundle ships a pre-built `music.db`. Users analyzing their own data
+rebuild this database from Last.fm and/or Spotify exports using
+`consolidate.py` (see "Getting your data" below).
+
+## Bundle contents
+
+| File | Purpose |
 |---|---|
-| Last.fm CSV | `data/edgarturtleblot.csv` |
-| Spotify Extended Streaming History | `Streaming_History_Audio_YYYY.json` (per-year files, separate export) |
-| Spotify library + playlists | `YourLibrary.json`, `Playlist1.json` (standard account export) |
-| SQLite database | `data/music.db` (pre-built; rebuild with `consolidate.py`) |
-| Analysis engine | `engine.py` |
-| Ingest script | `consolidate.py` |
+| `music.db` | Pre-built SQLite database — all play history, signals, library, playlists |
+| `engine.py` | Analysis engine (subcommands: `analyze`, `profile`, `playlist`, `signals`) |
+| `consolidate.py` | Upstream ingest script (only needed if rebuilding music.db from raw exports) |
 
-The `data/music.db` is pre-built and ships with the skill bundle. Rebuild only if new exports are added.
+Raw source files (Last.fm CSV, Spotify JSON exports) are **not included** — they
+were consumed during the upstream build step. `consolidate.py` is bundled for
+reference and for users who want to rebuild the database from their own exports.
 
-## Which script to use
+## Getting your data
+
+To analyze your own listening history, you need at least one of the following
+exports. More data = richer analysis; the tool works best with 5+ years of
+history but produces useful results from 2+ years.
+
+**Spotify (recommended starting point):**
+1. Go to spotify.com/account → Privacy settings → "Request your data"
+2. Select **Extended Streaming History** (not the basic "Account data" option —
+   that only covers the last year). Spotify sends a download link within 5–30 days.
+3. The download contains two folders: `Spotify Extended Streaming History/`
+   (the play-by-play JSON files) and `Spotify Account Data/` (library, playlists).
+
+**Last.fm (adds depth if you've been scrobbling):**
+1. Export via lastfm-to-csv or Benjamin Benben's exporter (search "last.fm
+   export CSV"). The CSV should have columns: `artist, album, track, date`.
+2. Last.fm data extends the timeline and provides album info that Spotify's
+   standard export lacks.
+
+**Spotify-only mode:** If you only have Spotify data, consolidate handles it:
+```bash
+python consolidate.py --spotify-dir "Spotify Extended Streaming History" \
+  --meta-dir "Spotify Account Data" --out music.db
+```
+All analysis features work. Trajectory classification and LTP detection are
+fully functional. The only gap: no Last.fm album metadata on older plays, so
+`top_albums` may be thinner for pre-2017 history.
+
+**Corpus size expectations:**
+
+| Corpus | What works well | What's thin |
+|---|---|---|
+| 10+ years, 50k+ plays | Everything — trajectory, epochs, LTP, deep rediscovery patterns | — |
+| 5–10 years, 20k–50k plays | Trajectory, LTP, seasonal analysis, playlists | Epoch detection may find fewer epochs |
+| 2–5 years, 5k–20k plays | Basic trajectory, playlists, top-N, clock/seasonal | LTP needs long gaps → fewer qualifiers; raise `--min-plays` to 3 |
+| < 2 years or < 5k plays | Top-N, clock/seasonal, playlist (with relaxed filters) | Trajectory types collapse toward DIFFUSE; LTP effectively disabled |
+
+## Quick reference
 
 | Goal | Command |
 |---|---|
-| Rebuild database from raw exports | `consolidate.py` |
-| Add/refresh Spotify behavioral signals | `engine.py signals` |
 | Full listening autobiography + trajectory | `engine.py analyze` |
 | Artist deep-dive | `engine.py analyze --artist "Name"` |
 | Corpus feasibility map (run before playlist) | `engine.py profile` |
 | Zero-friction playlist → tuneyourmusic | `engine.py playlist` |
 
-## Step 0 -- Consolidate data sources (one-time setup)
+All commands take `--db music.db` (the pre-built database in the bundle).
 
-Only needed when adding new exports. The pre-built `data/music.db` is already current.
+**Upstream (requires raw exports not in bundle):**
 
-**Standard export** (streaming history, library, and playlists all in one folder):
+| Goal | Command |
+|---|---|
+| Rebuild database from raw exports | `consolidate.py` |
+| Add/refresh Spotify behavioral signals | `engine.py signals` |
+
+## Step 0 -- Consolidate (upstream — raw exports not in bundle)
+
+The bundled `music.db` is already built. This section documents how it was
+created, for users who want to rebuild from their own exports.
+
+**Spotify-only** (most common for new users):
 ```bash
-python consolidate.py --csv data/edgarturtleblot.csv --spotify-dir data/ --out data/music.db
-```
+# Standard export (last ~1 year)
+python consolidate.py --spotify-dir /path/to/spotify/ --out music.db
 
-**Extended Streaming History** (Spotify's full-history export — streaming files live in a
-separate folder from library/playlists):
-```bash
+# Extended Streaming History (full history — recommended)
 python consolidate.py \
-  --csv data/edgarturtleblot.csv \
   --spotify-dir "path/to/Spotify Extended Streaming History" \
   --meta-dir "path/to/Spotify Account Data" \
-  --out data/music.db
+  --out music.db
+```
+
+**Spotify + Last.fm** (adds timeline depth and album metadata):
+```bash
+# Standard Spotify export
+python consolidate.py --csv lastfm_export.csv --spotify-dir /path/to/spotify/ --out music.db
+
+# Extended Streaming History
+python consolidate.py \
+  --csv lastfm_export.csv \
+  --spotify-dir "path/to/Spotify Extended Streaming History" \
+  --meta-dir "path/to/Spotify Account Data" \
+  --out music.db
 ```
 
 `--spotify-dir` globs both `StreamingHistory*.json` (standard) and
@@ -74,7 +131,7 @@ python consolidate.py \
 `--meta-dir` is where `YourLibrary.json` and `Playlist1.json` live.
 Defaults to `--spotify-dir` when omitted.
 
-Expected output (current corpus):
+Current corpus stats:
 ```
 82,384 plays (Last.fm)
 55,980 plays (Spotify Extended, 13 files, 2014–2026)
@@ -110,7 +167,7 @@ plays_first_30d, plays_last_30d, burst_ratio_30
 
 ```python
 import sqlite3, json
-con = sqlite3.connect("data/music.db")
+con = sqlite3.connect("music.db")
 con.row_factory = sqlite3.Row
 
 # Total plays by source
@@ -144,27 +201,27 @@ python3 -c "import json, math, statistics, collections, datetime, argparse, path
 
 Always passes — stdlib only, no pip installs required.
 
-## Step 2a -- Add Spotify behavioral signals (optional, one-time)
+## Step 2a -- Spotify behavioral signals (upstream — raw JSON not in bundle)
 
-Only needed if `spotify_signals` table is absent or you want to refresh it.
+The bundled `music.db` already contains a populated `spotify_signals` table.
+This section documents how signals are computed, for users who want to refresh
+from their own Spotify JSON exports.
 
 ```bash
 # Extended Streaming History (pass all per-year files)
-python engine.py signals --db data/music.db \
+python engine.py signals --db music.db \
   --input path/to/Streaming_History_Audio_2014.json \
-          path/to/Streaming_History_Audio_2015.json \
-          ... \
-          path/to/Streaming_History_Audio_2026.json
+          path/to/Streaming_History_Audio_2015.json ...
 
 # Standard export
-python engine.py signals --db data/music.db --input data/StreamingHistory*.json
+python engine.py signals --db music.db --input path/to/StreamingHistory*.json
 ```
 
 Both standard (`endTime` / `artistName` / `msPlayed`) and extended
 (`ts` / `master_metadata_*` / `ms_played` / `skipped`) formats are handled automatically.
 Podcasts, audiobooks, and incognito plays are filtered out of the extended format.
 
-Expected output (current corpus, Extended Streaming History 2014–2026):
+Current corpus signals (Extended Streaming History 2014–2026):
 ```
 55,980 plays | 3,800 sessions | 7,739 tracks | completion_source=relative
 ```
@@ -174,23 +231,23 @@ track record with `skip_rate`, `completion_mean_ratio`, `opener_rate`,
 `within_session_repeats`. If absent, those fields are `null` — analysis is never gated
 on Spotify data.
 
-## Step 2b -- Run analysis
+## Step 2b -- Run analysis (primary workflow)
 
 ```bash
 # Full catalog
-python engine.py analyze --db data/music.db --out analysis.json
+python engine.py analyze --db music.db --out analysis.json
 
 # Single artist
-python engine.py analyze --db data/music.db --artist "Radiohead" --out radiohead.json
+python engine.py analyze --db music.db --artist "Radiohead" --out radiohead.json
 
 # Spring playlist via analyze (LTP-gated, season-weighted)
-python engine.py analyze --db data/music.db --months 3,4,5 --n 50 --out spring.json
+python engine.py analyze --db music.db --months 3,4,5 --n 50 --out spring.json
 
 # Tune thresholds
-python engine.py analyze --db data/music.db --gap-days 180 --epoch-min-plays 30 --min-plays 5
+python engine.py analyze --db music.db --gap-days 180 --epoch-min-plays 30 --min-plays 5
 
 # Historical reference date
-python engine.py analyze --db data/music.db --refdate 2020-01-01 --out retro.json
+python engine.py analyze --db music.db --refdate 2020-01-01 --out retro.json
 ```
 
 ### Output keys (`analyze`)
@@ -283,13 +340,26 @@ Priority is checked in order: FLASH_BINGE first, DIFFUSE last.
 
 ### Key methodological concepts
 
+These concepts are the analytical core of the engine — they distinguish it
+from play-count dashboards and surface-level listening stats.
+
 **Long-delay true positive (LTP)**: A track you reliably return to after extended absence.
 Qualifies if it has >= `--min-returns` (default 2) gaps of >= `--gap-days` (default 180) days
-between consecutive plays, and >= `--min-plays` (default 5) total plays.
+between consecutive plays, and >= `--min-plays` (default 5) total plays. This is a different
+signal from "most played" — a track with 200 plays in one month is not an LTP, but a track
+with 30 plays spread across five returns over eight years is. LTP detection answers: *what
+do you genuinely love vs. what did you merely binge?*
+
+**Trajectory classification**: Each track is assigned one of seven behavioral archetypes
+(see Trajectory types above) based on burst ratios, quartile distribution, and return
+patterns. The taxonomy captures *how* engagement unfolds over time — not just how much.
+No consumer music tool currently provides this.
 
 **Epoch detection**: Contiguous months where the full corpus has >= `--epoch-min-plays`
 (default 30) plays/month form a listening epoch. Always computed from the full corpus, even
 in `--artist` mode. Per-track `epoch_rates` show plays-per-1000-corpus-plays in each epoch.
+This normalizes for the fact that people listen in phases — a track getting 5 plays in a
+low-activity month means more than 5 plays in a 500-play month.
 
 **Burst ratio**: Fraction of total plays occurring within the first 30 (or 90) days of
 a track's lifespan. `burst_ratio_30 = 0.80` means 80% of all listens were in the first month.
@@ -307,6 +377,12 @@ lifespan. `q1=0.70` = front-loaded. `q4=0.40` = sustained recent interest.
 **`saved` flag**: `true` if the track appears in `library_tracks` (Spotify saved/liked).
 Indicates explicit preference; used as a scoring multiplier in `playlist`.
 
+**Behavioral playlist scoring**: Unlike collaborative filtering ("users like you also liked")
+or audio-feature matching ("similar BPM/valence"), playlists here are scored on *your own*
+longitudinal listening patterns — periodicity of returns, completion rate, rest time, and
+trajectory archetype. The playlist answers: *what should I hear again based on how I
+actually listen?*
+
 ## Step 2c -- Profile (corpus feasibility map)
 
 Run `profile` before `playlist` to understand what parameter combinations are viable
@@ -314,9 +390,9 @@ for this specific corpus. The output tells the calling LLM how large each candid
 is, where the skip signal is meaningful, and which seasons have strong representation.
 
 ```bash
-python engine.py profile --db data/music.db
+python engine.py profile --db music.db
 # or save to file
-python engine.py profile --db data/music.db --out profile.json
+python engine.py profile --db music.db --out profile.json
 ```
 
 ### Profile output schema
@@ -379,19 +455,19 @@ Produces a scored, ready-to-transfer tracklist. Reads only from `music.db`.
 
 ```bash
 # Default: 20 tracks, medium energy, 30d rest minimum
-python engine.py playlist --db data/music.db
+python engine.py playlist --db music.db
 
 # With context label and energy profile
-python engine.py playlist --db data/music.db --n 25 --context "Sunday drive" --energy low
+python engine.py playlist --db music.db --n 25 --context "Sunday drive" --energy low
 
 # Saved tracks only, rested 6 months
-python engine.py playlist --db data/music.db --n 20 --require-saved --min-rest 180
+python engine.py playlist --db music.db --n 20 --require-saved --min-rest 180
 
 # Season-filtered
-python engine.py playlist --db data/music.db --n 30 --months 3,4,5 --context "spring"
+python engine.py playlist --db music.db --n 30 --months 3,4,5 --context "spring"
 
 # Save JSON alongside stdout
-python engine.py playlist --db data/music.db --n 20 --out playlist.json
+python engine.py playlist --db music.db --n 20 --out playlist.json
 ```
 
 ### Output format
@@ -480,7 +556,7 @@ lower half of skip-rate tracks.
 
 The recommended two-step flow when generating a playlist from a user request:
 
-1. Run `engine.py profile --db data/music.db` — read `candidate_pools`,
+1. Run `engine.py profile --db music.db` — read `candidate_pools`,
    `skip_signal`, `season_affinity`, and `playlist_guidance`
 2. Map the user's request to parameters using the input hook space above
 3. Validate parameter viability against pool sizes (adjust `--n` or relax filters if pool is thin)

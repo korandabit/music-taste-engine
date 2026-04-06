@@ -83,6 +83,7 @@ fully functional. The only gap: no Last.fm album metadata on older plays, so
 | Goal | Command |
 |---|---|
 | Full listening autobiography + trajectory | `engine.py analyze` |
+| Standalone markdown report | `engine.py analyze --summary report.md` |
 | Artist deep-dive | `engine.py analyze --artist "Name"` |
 | Corpus feasibility map (run before playlist) | `engine.py profile` |
 | Zero-friction playlist → tuneyourmusic | `engine.py playlist` |
@@ -248,6 +249,9 @@ python engine.py analyze --db music.db --gap-days 180 --epoch-min-plays 30 --min
 
 # Historical reference date
 python engine.py analyze --db music.db --refdate 2020-01-01 --out retro.json
+
+# Standalone markdown report (no Claude Code needed)
+python engine.py analyze --db music.db --summary my_listening_report.md
 ```
 
 ### Output keys (`analyze`)
@@ -613,6 +617,18 @@ For zero-friction real-world use, prefer the `playlist` subcommand over `analyze
 | `--max-per-artist` | 4 | Max tracks per artist in playlist output |
 | `--refdate` | today | Reference date for days_since, burst ratios |
 | `--months` | (none) | Target months e.g. `3,4,5` for spring; omit for season-agnostic run |
+| `--summary` | (none) | Write a standalone markdown report to this path |
+
+**Auto-calibration:** When the corpus has < 20k plays or < 3 year span, `analyze`
+automatically lowers `--min-plays`, `--min-returns`, and `--epoch-min-plays` so that
+trajectory classification and LTP detection remain meaningful on thinner data. Explicitly
+set values are never overridden. The output `meta.corpus_calibration` key shows what was
+adjusted and why (`null` when no calibration needed).
+
+**Summary report:** `--summary report.md` produces a human-readable markdown file with
+overview table, epoch timeline, trajectory distribution with type glossary,
+binge→outcome correlation interpretation, top LTP tracks, and notable rediscoveries.
+Useful for sharing results without requiring Claude Code or JSON tooling.
 
 ### engine.py playlist (CLI flags)
 

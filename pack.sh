@@ -10,14 +10,11 @@ powershell -Command "
   \$files = @(
     'SKILL.md',
     'consolidate.py',
-    'lastfm_taste_engine.py',
-    'lastfm_trajectory_engine.py',
-    'spotify_signal_engine.py'
+    'engine.py',
+    'recommendation_log.db'
   ) | ForEach-Object { Join-Path \$dir \$_ }
-  \$dataFiles = Get-ChildItem -Path (Join-Path \$dir 'data') -File |
-    Where-Object { \$_.Extension -ne '.zip' } |
-    Select-Object -ExpandProperty FullName
-  \$all = \$files + \$dataFiles
+  \$db = Join-Path \$dir 'data\music.db'
+  \$all = \$files + \$db
   Compress-Archive -Path \$all -DestinationPath '$OUT' -Force
   Write-Host 'Created $OUT'
 "

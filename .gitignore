@@ -1,13 +1,14 @@
 # Dev tooling
 ledger.db
 CLAUDE.md
-SKILL-v1.md
-SKILL-v2.md
-spotify_signal_engine_spec.md
-lastfm_taste_engine.zip
+
+# Archive — kept locally, not tracked
+archive/
+
+# Source data — stays local, not in repo
+data/
 
 # Generated — rebuild with build.sh / pack.sh
-data/music.db
 music-data-engine.zip
 
 # Claude Code

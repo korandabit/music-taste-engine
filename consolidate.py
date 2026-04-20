@@ -4,10 +4,9 @@ consolidate.py
 Merges all music data sources into a single SQLite database.
 
 Sources:
-  data/edgarturtleblot.csv        Last.fm export (98k plays, ~2006–present)
-  data/StreamingHistory0.json     Spotify play history (2,952 plays, 2019–2020)
-  data/Playlist1.json             Spotify playlists (73 playlists)
-  data/YourLibrary.json           Spotify saved tracks + albums
+  --csv                           Last.fm export CSV
+  --spotify-dir                   Directory containing StreamingHistory*.json,
+                                  YourLibrary.json, Playlist1.json
   data/Inferences.json            SKIPPED (ad-targeting labels, not music data)
 
 Output:
@@ -23,13 +22,13 @@ Tables:
   playlists       Spotify playlist items (flattened)
 
 Usage:
-  python consolidate.py [--data-dir DATA_DIR] [--out OUT_DB]
+  python consolidate.py --csv data/edgarturtleblot.csv --spotify-dir data/ --out data/music.db
 """
 
 import argparse
+import glob
 import json
 import sqlite3
-import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -37,11 +36,12 @@ from pathlib import Path
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-LASTFM_DATE_FORMAT  = "%d %b %Y %H:%M"
-SPOTIFY_DATE_FORMAT = "%Y-%m-%d %H:%M"
-MIN_YEAR            = 2005   # drop Last.fm pre-scrobble artifacts
-MERGE_WINDOW_SEC    = 300    # ±5 min to consider a Spotify play == a Last.fm scrobble
-SKIP_MS_THRESHOLD   = 30_000 # Spotify plays under 30s counted as skips
+LASTFM_DATE_FORMAT   = "%d %b %Y %H:%M"
+SPOTIFY_DATE_FORMAT  = "%Y-%m-%d %H:%M"
+SPOTIFY_EXT_DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
+MIN_YEAR             = 2005   # drop Last.fm pre-scrobble artifacts
+MERGE_WINDOW_SEC     = 300    # ±5 min to consider a Spotify play == a Last.fm scrobble
+SKIP_MS_THRESHOLD    = 30_000 # Spotify plays under 30s counted as skips
 
 
 # ─── Parsing ──────────────────────────────────────────────────────────────────
@@ -72,25 +72,55 @@ def load_lastfm(path: Path) -> list[dict]:
     return plays
 
 
+def _parse_spotify_record(r: dict) -> dict | None:
+    """Normalise one record from either standard or extended Spotify format.
+    Returns None for non-music entries (podcasts, audiobooks, incognito)."""
+    # Extended format detection: has 'master_metadata_track_name'
+    if "master_metadata_track_name" in r:
+        if r.get("incognito_mode"):
+            return None
+        if not r.get("master_metadata_track_name"):  # podcast / audiobook
+            return None
+        try:
+            dt = datetime.strptime(r["ts"], SPOTIFY_EXT_DATE_FMT)
+        except (ValueError, KeyError):
+            return None
+        ms = r.get("ms_played", 0) or 0
+        skipped = r.get("skipped") or (ms < SKIP_MS_THRESHOLD)
+        return {
+            "source":    "spotify",
+            "ts":        dt,
+            "artist":    (r.get("master_metadata_album_artist_name") or "").strip(),
+            "album":     (r.get("master_metadata_album_album_name") or "").strip() or None,
+            "track":     (r.get("master_metadata_track_name") or "").strip(),
+            "ms_played": ms,
+            "is_skip":   1 if skipped else 0,
+        }
+    # Standard format
+    try:
+        dt = datetime.strptime(r["endTime"], SPOTIFY_DATE_FORMAT)
+    except (ValueError, KeyError):
+        return None
+    ms = r.get("msPlayed", 0) or 0
+    return {
+        "source":    "spotify",
+        "ts":        dt,
+        "artist":    r.get("artistName", "").strip(),
+        "album":     None,
+        "track":     r.get("trackName", "").strip(),
+        "ms_played": ms,
+        "is_skip":   1 if ms < SKIP_MS_THRESHOLD else 0,
+    }
+
+
 def load_spotify_plays(path: Path) -> list[dict]:
     with open(path, encoding="utf-8") as fh:
         raw = json.load(fh)
     plays = []
     for r in raw:
-        try:
-            dt = datetime.strptime(r["endTime"], SPOTIFY_DATE_FORMAT)
-        except (ValueError, KeyError):
-            continue
-        ms = r.get("msPlayed", 0)
-        plays.append({
-            "source":    "spotify",
-            "ts":        dt,
-            "artist":    r.get("artistName", "").strip(),
-            "album":     None,
-            "track":     r.get("trackName", "").strip(),
-            "ms_played": ms,
-            "is_skip":   1 if ms < SKIP_MS_THRESHOLD else 0,
-        })
+        rec = _parse_spotify_record(r)
+        if rec and rec["artist"] and rec["track"]:
+            plays.append(rec)
     return plays
 
 
@@ -261,37 +291,63 @@ def write_db(db_path: Path, plays, lib_tracks, lib_albums, playlist_rows):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="data", help="Directory containing source files")
-    ap.add_argument("--out",      default="data/music.db", help="Output SQLite path")
+    ap.add_argument("--csv",         required=True,        help="Last.fm CSV export path")
+    ap.add_argument("--spotify-dir", default=None,         help="Directory containing StreamingHistory*.json / Streaming_History_Audio_*.json")
+    ap.add_argument("--meta-dir",    default=None,         help="Directory containing YourLibrary.json and Playlist1.json (defaults to --spotify-dir)")
+    ap.add_argument("--out",         default="data/music.db", help="Output SQLite path")
     args = ap.parse_args()
 
-    data_dir = Path(args.data_dir)
-    out_path = Path(args.out)
+    csv_path     = Path(args.csv)
+    spotify_dir  = Path(args.spotify_dir) if args.spotify_dir else None
+    meta_dir     = Path(args.meta_dir) if args.meta_dir else spotify_dir
+    out_path     = Path(args.out)
 
     print("Loading Last.fm CSV...")
-    lastfm = load_lastfm(data_dir / "edgarturtleblot.csv")
+    lastfm = load_lastfm(csv_path)
     print(f"  {len(lastfm):,} plays")
 
-    print("Loading Spotify streaming history...")
-    spotify = load_spotify_plays(data_dir / "StreamingHistory0.json")
-    print(f"  {len(spotify):,} plays")
+    spotify_plays_all: list[dict] = []
+    if spotify_dir:
+        history_files = sorted(
+            glob.glob(str(spotify_dir / "StreamingHistory*.json")) +
+            glob.glob(str(spotify_dir / "Streaming_History_Audio_*.json"))
+        )
+        if history_files:
+            print(f"Loading Spotify streaming history ({len(history_files)} file(s))...")
+            for hf in history_files:
+                batch = load_spotify_plays(Path(hf))
+                spotify_plays_all.extend(batch)
+                print(f"  {hf}: {len(batch):,} plays")
+        else:
+            print("No StreamingHistory*.json files found in --spotify-dir; skipping Spotify plays.")
+    spotify = spotify_plays_all
+    print(f"  {len(spotify):,} Spotify plays total")
 
     print("Merging play timelines...")
-    plays = merge_plays(lastfm, spotify)
-    sources = {}
+    plays = merge_plays(lastfm, spotify) if spotify else lastfm
+    sources: dict[str, int] = {}
     for p in plays:
         sources[p["source"]] = sources.get(p["source"], 0) + 1
     for src, n in sorted(sources.items()):
         print(f"  {src}: {n:,}")
     print(f"  total: {len(plays):,}")
 
-    print("Loading Spotify library...")
-    lib_tracks, lib_albums = load_library(data_dir / "YourLibrary.json")
-    print(f"  {len(lib_tracks):,} saved tracks, {len(lib_albums):,} saved albums")
+    lib_tracks: list[dict] = []
+    lib_albums: list[dict] = []
+    playlist_rows: list[dict] = []
 
-    print("Loading Spotify playlists...")
-    playlist_rows = load_playlists(data_dir / "Playlist1.json")
-    print(f"  {len(playlist_rows):,} playlist items across playlists")
+    if meta_dir:
+        library_path = meta_dir / "YourLibrary.json"
+        if library_path.exists():
+            print("Loading Spotify library...")
+            lib_tracks, lib_albums = load_library(library_path)
+            print(f"  {len(lib_tracks):,} saved tracks, {len(lib_albums):,} saved albums")
+
+        playlist_path = meta_dir / "Playlist1.json"
+        if playlist_path.exists():
+            print("Loading Spotify playlists...")
+            playlist_rows = load_playlists(playlist_path)
+            print(f"  {len(playlist_rows):,} playlist items across playlists")
 
     print(f"Writing {out_path}...")
     write_db(out_path, plays, lib_tracks, lib_albums, playlist_rows)

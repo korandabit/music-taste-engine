@@ -10,7 +10,8 @@ powershell -Command "
   \$files = @(
     'SKILL.md',
     'consolidate.py',
-    'engine.py'
+    'engine.py',
+    'recommendation_log.db'
   ) | ForEach-Object { Join-Path \$dir \$_ }
   \$db = Join-Path \$dir 'data\music.db'
   \$all = \$files + \$db

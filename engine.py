@@ -19,6 +19,7 @@ import argparse
 import glob as _glob
 import json
 import math
+import pathlib
 import sqlite3
 import statistics
 import sys
@@ -1454,6 +1455,18 @@ def cmd_playlist(args: argparse.Namespace) -> None:
     ref_date      = datetime.strptime(args.refdate, "%Y-%m-%d") if args.refdate else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     target_months = set(int(m) for m in args.months.split(",")) if args.months else None
 
+    # ── Load previously recommended tracks for exclusion ─────────────────────
+    excluded: set[tuple] = set()
+    if not args.no_log:
+        log_path = args.log_db or str(pathlib.Path(args.db).parent.parent / "recommendation_log.db")
+        if pathlib.Path(log_path).exists():
+            lcon = sqlite3.connect(log_path)
+            rows = lcon.execute("SELECT artist, track FROM recommended").fetchall()
+            lcon.close()
+            excluded = {(a.lower(), t.lower()) for a, t in rows}
+            if excluded:
+                print(f"  Excluding {len(excluded)} previously recommended tracks")
+
     con           = open_db(args.db)
     spotify_sigs  = load_spotify_signals(con)
     library_saved = load_library_tracks(con)
@@ -1470,6 +1483,8 @@ def cmd_playlist(args: argparse.Namespace) -> None:
         if n < args.min_plays:
             continue
         if (timestamps[-1] - timestamps[0]).days < 1:
+            continue
+        if (artist.lower(), track.lower()) in excluded:
             continue
 
         gap_stats = compute_gaps(timestamps, 180)
@@ -1499,6 +1514,8 @@ def cmd_playlist(args: argparse.Namespace) -> None:
             "saved":        (artist.lower(), track.lower()) in library_saved,
         })
 
+    track_meta = {(t["artist"].lower(), t["track"].lower()): t for t in tracks}
+
     playlist = score_candidates(
         tracks,
         n              = args.n,
@@ -1520,7 +1537,7 @@ def cmd_playlist(args: argparse.Namespace) -> None:
     print()
     print("─" * 52)
     print("Transfer to Spotify / Apple Music / Tidal / etc:")
-    print("  https://www.tuneyourmusic.com/transfer")
+    print("  https://www.tunemymusic.com/transfer")
     print()
     print("Paste the list above, pick your destination, go.")
     print("─" * 52)
@@ -1530,6 +1547,37 @@ def cmd_playlist(args: argparse.Namespace) -> None:
         with open(args.out, "w", encoding="utf-8") as fh:
             _json.dump({"context": context_label, "tracks": playlist, "tracklist": lines}, fh, indent=2)
         print(f"\nSaved: {args.out}")
+
+    # ── Recommendation log: write new run ────────────────────────────────────
+    if not args.no_log:
+        log_path = args.log_db or str(pathlib.Path(args.db).parent.parent / "recommendation_log.db")
+        ts_now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        run_id = args.run_id or f"{context_label}-{ts_now[:10]}"
+        lcon = sqlite3.connect(log_path)
+        lcon.execute("""CREATE TABLE IF NOT EXISTS recommended (
+            ts TEXT, playlist_run TEXT, artist TEXT, track TEXT, context TEXT,
+            plays INTEGER, returns INTEGER, rest_days INTEGER, spring_pct INTEGER)""")
+        lcon.execute("""CREATE TABLE IF NOT EXISTS feedback (
+            ts TEXT, playlist_run TEXT, artist TEXT, track TEXT, signal TEXT)""")
+        rows = []
+        for t in playlist:
+            m = track_meta.get((t["artist"].lower(), t["track"].lower()), {})
+            spring_ratio = (m.get("ltp") or {}).get("target_season_ratio")
+            rows.append((
+                ts_now, run_id, t["artist"], t["track"], context_label,
+                m.get("total_plays"), m.get("long_returns"), t["days_since"],
+                int(spring_ratio * 100) if spring_ratio else None,
+            ))
+        lcon.executemany("INSERT INTO recommended VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        lcon.commit()
+        lcon.close()
+        print(f"\nLogged {len(rows)} tracks → {log_path}  (run: {run_id})")
+        print()
+        print("━" * 52)
+        print("HUMAN STEP REQUIRED TO CLOSE THE LOOP:")
+        print("  1. Claude: run  bash pack.sh  to rebuild the skill zip")
+        print("  2. You: upload music-data-engine.zip to your Claude skill")
+        print("━" * 52)
 
 
 # ── Profile subcommand ────────────────────────────────────────────────────────
@@ -1726,6 +1774,9 @@ def main() -> None:
     p_pl.add_argument("--min-plays",       type=int,   default=5,        help="Min plays to consider a track")
     p_pl.add_argument("--refdate",         default=None,                 help="Reference date YYYY-MM-DD")
     p_pl.add_argument("--out",             default=None,                 help="Optional JSON output path")
+    p_pl.add_argument("--log-db",          default=None,                 help="Path to recommendation_log.db (default: auto-detect)")
+    p_pl.add_argument("--run-id",          default=None,                 help="Label for this run in the log (default: context-YYYY-MM-DD)")
+    p_pl.add_argument("--no-log",          action="store_true",          help="Skip reading exclusions and writing to log")
 
     # ── profile ──
     p_pro = sub.add_parser("profile", help="Corpus feasibility map — run before playlist to inform parameter choices")

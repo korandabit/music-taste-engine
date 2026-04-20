@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>50 Tracks — Spring Rocketfuel</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f0e8;
+    --surface: #ede8de;
+    --border: #d4cec0;
+    --ink: #1a1714;
+    --muted: #8a8070;
+    --accent: #b84c2a;
+    --accent2: #4a7a4a;
+    --blue: #2a4a7a;
+    --green: #1DB954;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 300;
+    padding: 48px 32px;
+    max-width: 900px;
+    margin: 0 auto;
+    font-size: 13px;
+  }
+  header {
+    margin-bottom: 40px;
+    padding-bottom: 28px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  h1 {
+    font-family: 'Instrument Serif', serif;
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 400;
+    font-style: italic;
+    line-height: 1.1;
+    margin-bottom: 10px;
+  }
+  .subhead {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.9;
+  }
+  .subhead strong { color: var(--accent); font-weight: 500; }
+
+  .toolbar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 32px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 14px;
+    border: 1.5px solid var(--ink);
+    background: transparent;
+    color: var(--ink);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.12s;
+  }
+  .btn:hover { background: var(--ink); color: var(--bg); }
+  .btn.go { background: var(--green); border-color: var(--green); color: #000; }
+  .btn.go:hover { background: #1ed760; border-color: #1ed760; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  thead tr {
+    border-bottom: 1.5px solid var(--ink);
+  }
+  thead th {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0 10px 10px;
+    text-align: left;
+    font-weight: 500;
+  }
+  thead th:first-child { padding-left: 0; width: 28px; text-align: right; }
+  thead th.r { text-align: right; }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+    opacity: 0;
+    animation: rowIn 0.2s ease forwards;
+  }
+  tbody tr:hover { background: var(--surface); }
+  @keyframes rowIn { to { opacity: 1; } }
+
+  td {
+    padding: 9px 10px;
+    vertical-align: middle;
+  }
+  td:first-child { padding-left: 0; text-align: right; color: var(--muted); font-size: 10px; width: 28px; }
+
+  .track-name {
+    font-family: 'Instrument Serif', serif;
+    font-size: 1rem;
+    font-style: italic;
+    color: var(--ink);
+  }
+  .artist-name {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 1px;
+  }
+
+  .stat { font-size: 10px; color: var(--muted); text-align: right; }
+  .stat.warm { color: var(--accent); }
+  .stat.cool { color: var(--blue); }
+  .stat.nature { color: var(--accent2); }
+
+  .bar-cell { width: 80px; }
+  .bar-wrap { 
+    height: 3px; 
+    background: var(--border); 
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .bar-fill { 
+    height: 100%; 
+    background: var(--accent); 
+    border-radius: 2px; 
+  }
+
+  .sp-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    background: var(--green);
+    color: #000;
+    border-radius: 50%;
+    font-size: 9px;
+    text-decoration: none;
+    transition: background 0.12s;
+    flex-shrink: 0;
+  }
+  .sp-link:hover { background: #1ed760; }
+
+  .instructions {
+    margin-top: 40px;
+    padding: 20px;
+    border: 1.5px solid var(--ink);
+    background: var(--surface);
+  }
+  .instructions .eyebrow { margin-bottom: 12px; }
+  .step { 
+    display: flex; gap: 14px; 
+    padding: 9px 0; 
+    border-bottom: 1px solid var(--border);
+    font-size: 11px; 
+    line-height: 1.7; 
+    color: var(--muted);
+  }
+  .step:last-child { border-bottom: none; }
+  .sn { color: var(--accent); font-weight: 500; flex-shrink: 0; }
+  .step a { color: var(--blue); }
+  code { background: var(--border); padding: 1px 4px; font-family: 'IBM Plex Mono'; font-size: 10px; }
+
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--ink); color: var(--bg);
+    font-family: 'IBM Plex Mono'; font-size: 11px; font-weight: 500;
+    padding: 10px 16px;
+    opacity: 0; transform: translateY(6px);
+    transition: all 0.18s;
+    pointer-events: none; z-index: 999;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="eyebrow">edgarturtleblot · long-delay true positives · spring-tuned</div>
+  <h1>50 Tracks,<br>Spring 2026</h1>
+  <div class="subhead">
+    Scored on: <strong>long-return count</strong> (independent returns after 180d+ gaps) ·
+    <strong>spring ratio</strong> · play depth · rest duration.<br>
+    Max 4 tracks per artist. All rested ≥45 days.
+  </div>
+</header>
+
+<div class="toolbar">
+  <a href="https://www.tunemymusic.com/transfer" target="_blank" class="btn go">⚡ Import via TuneMyMusic</a>
+  <button class="btn" onclick="copyAll()">⎘ Copy all 50 tracks</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Track</th>
+      <th class="r">Plays</th>
+      <th class="r">Returns</th>
+      <th class="r">Spring %</th>
+      <th class="r">Rest</th>
+      <th class="bar-cell"></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div class="instructions">
+  <div class="eyebrow">Fastest path → Spotify playlist</div>
+  <div class="step"><span class="sn">1</span><span>Click <strong>⎘ Copy all 50 tracks</strong> — copies as "Artist — Track" list</span></div>
+  <div class="step"><span class="sn">2</span><span>Go to <a href="https://www.tunemymusic.com/transfer" target="_blank">tunemymusic.com/transfer</a> → Source: <code>Text/File</code> → paste → Destination: <code>Spotify</code></span></div>
+  <div class="step"><span class="sn">3</span><span>TuneMyMusic matches + creates playlist. Free tier handles 50 tracks. Done.</span></div>
+  <div class="step"><span class="sn">alt</span><span>Each ● opens the Spotify search for that track directly.</span></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const tracks = [
+  {n:1,  artist:"Radiohead",         track:"Give Up the Ghost",         plays:61,  returns:7, spring:59, rest:824},
+  {n:2,  artist:"Mason Jennings",    track:"Isabel",                    plays:75,  returns:7, spring:54, rest:823},
+  {n:3,  artist:"Radiohead",         track:"Codex",                     plays:92,  returns:7, spring:46, rest:558},
+  {n:4,  artist:"Weezer",            track:"Photograph",                plays:17,  returns:7, spring:64, rest:734},
+  {n:5,  artist:"Weezer",            track:"Knock-Down Drag-Out",       plays:26,  returns:6, spring:61, rest:734},
+  {n:6,  artist:"Radiohead",         track:"Little by Little",          plays:40,  returns:5, spring:67, rest:824},
+  {n:7,  artist:"Vampire Weekend",   track:"Diane Young",               plays:100, returns:5, spring:54, rest:824},
+  {n:8,  artist:"Muse",              track:"Stockholm Syndrome",        plays:28,  returns:8, spring:32, rest:1148},
+  {n:9,  artist:"Animal Collective", track:"In the Flowers",            plays:15,  returns:7, spring:53, rest:757},
+  {n:10, artist:"The Killers",       track:"Show You How",              plays:62,  returns:7, spring:30, rest:596},
+  {n:11, artist:"Muse",              track:"Guiding Light",             plays:121, returns:6, spring:40, rest:513},
+  {n:12, artist:"Muse",              track:"MK Ultra",                  plays:63,  returns:7, spring:36, rest:512},
+  {n:13, artist:"Radiohead",         track:"The Butcher",               plays:45,  returns:6, spring:46, rest:824},
+  {n:14, artist:"LCD Soundsystem",   track:"Dance Yrself Clean",        plays:31,  returns:5, spring:64, rest:1092},
+  {n:15, artist:"Beck",              track:"Volcano",                   plays:18,  returns:7, spring:44, rest:1068},
+  {n:16, artist:"LCD Soundsystem",   track:"Home",                      plays:12,  returns:5, spring:75, rest:1092},
+  {n:17, artist:"TV on the Radio",   track:"Wolf Like Me",              plays:24,  returns:8, spring:58, rest:223},
+  {n:18, artist:"Arcade Fire",       track:"Windowsill",                plays:16,  returns:8, spring:31, rest:1549},
+  {n:19, artist:"TV on the Radio",   track:"Staring At The Sun",        plays:32,  returns:7, spring:34, rest:1063},
+  {n:20, artist:"Weezer",            track:"Hash Pipe",                 plays:16,  returns:5, spring:68, rest:686},
+  {n:21, artist:"blink-182",         track:"Stay Together for the Kids",plays:12,  returns:8, spring:33, rest:1475},
+  {n:22, artist:"Kings of Leon",     track:"Trani",                     plays:22,  returns:5, spring:63, rest:704},
+  {n:23, artist:"Vampire Weekend",   track:"White Sky",                 plays:22,  returns:5, spring:63, rest:928},
+  {n:24, artist:"The Low Anthem",    track:"To Ohio (Reprise)",         plays:52,  returns:5, spring:51, rest:824},
+  {n:25, artist:"LCD Soundsystem",   track:"I Can Change",              plays:87,  returns:7, spring:41, rest:327},
+  {n:26, artist:"Animal Collective", track:"Brother Sport",             plays:14,  returns:7, spring:42, rest:649},
+  {n:27, artist:"MGMT",              track:"I Found a Whistle",         plays:83,  returns:5, spring:44, rest:596},
+  {n:28, artist:"TV on the Radio",   track:"Family Tree",               plays:36,  returns:5, spring:55, rest:1426},
+  {n:29, artist:"The Killers",       track:"Andy You're a Star",        plays:32,  returns:6, spring:43, rest:3226},
+  {n:30, artist:"The Killers",       track:"Everything Will Be Alright",plays:39,  returns:5, spring:53, rest:3226},
+  {n:31, artist:"The Killers",       track:"Read My Mind",              plays:15,  returns:6, spring:53, rest:1978},
+  {n:32, artist:"Animal Collective", track:"For Reverend Green",        plays:36,  returns:8, spring:36, rest:354},
+  {n:33, artist:"Muse",              track:"Uprising",                  plays:46,  returns:5, spring:50, rest:902},
+  {n:34, artist:"Kings of Leon",     track:"Happy Alone",               plays:11,  returns:4, spring:81, rest:707},
+  {n:35, artist:"Sara Bareilles",    track:"Winter Song",               plays:42,  returns:3, spring:76, rest:824},
+  {n:36, artist:"Weezer",            track:"Crab",                      plays:20,  returns:5, spring:60, rest:734},
+  {n:37, artist:"Poppy Ackroyd",     track:"Feathers",                  plays:11,  returns:6, spring:54, rest:673},
+  {n:38, artist:"Low",               track:"Violent Past",              plays:22,  returns:6, spring:45, rest:726},
+  {n:39, artist:"Neutral Milk Hotel",track:"Oh Comely",                 plays:14,  returns:5, spring:64, rest:2965},
+  {n:40, artist:"The Low Anthem",    track:"To Ohio",                   plays:29,  returns:5, spring:51, rest:824},
+  {n:41, artist:"Dan Auerbach",      track:"Mean Monsoon",              plays:40,  returns:4, spring:60, rest:713},
+  {n:42, artist:"The White Stripes", track:"Instinct Blues",            plays:9,   returns:4, spring:77, rest:4374},
+  {n:43, artist:"Kings of Leon",     track:"Be Somebody",               plays:20,  returns:3, spring:80, rest:4227},
+  {n:44, artist:"MGMT",              track:"Song for Dan Treacy",       plays:29,  returns:4, spring:62, rest:4171},
+  {n:45, artist:"Animal Collective", track:"My Girls",                  plays:70,  returns:5, spring:37, rest:649},
+  {n:46, artist:"Kings of Leon",     track:"I Want You",                plays:46,  returns:7, spring:47, rest:228},
+  {n:47, artist:"Atoms for Peace",   track:"Ingenue",                   plays:14,  returns:5, spring:64, rest:530},
+  {n:48, artist:"Sleigh Bells",      track:"End of the Line",           plays:21,  returns:5, spring:52, rest:929},
+  {n:49, artist:"Philip Glass",      track:"Opening",                   plays:20,  returns:6, spring:40, rest:1101},
+  {n:50, artist:"Beck",              track:"Ramshackle",                plays:39,  returns:6, spring:30, rest:1043},
+];
+
+const maxPlays = Math.max(...tracks.map(t => t.plays));
+
+function restStr(d) {
+  if (d < 90) return d + 'd';
+  if (d < 365) return Math.round(d/30) + 'mo';
+  return (d/365).toFixed(1) + 'yr';
+}
+
+function spotifyUrl(artist, track) {
+  return `https://open.spotify.com/search/${encodeURIComponent(artist + ' ' + track)}`;
+}
+
+const tbody = document.getElementById('tbody');
+tracks.forEach((t, i) => {
+  const tr = document.createElement('tr');
+  tr.style.animationDelay = `${i * 18}ms`;
+
+  const springClass = t.spring >= 60 ? 'warm' : t.spring >= 45 ? 'cool' : 'stat';
+  const restClass   = t.rest >= 1000 ? 'warm' : t.rest >= 300 ? 'cool' : 'stat';
+  const barPct      = Math.round((t.plays / maxPlays) * 100);
+
+  tr.innerHTML = `
+    <td>${t.n}</td>
+    <td>
+      <div class="track-name">${t.track}</div>
+      <div class="artist-name">${t.artist}</div>
+    </td>
+    <td class="stat">${t.plays}×</td>
+    <td class="stat cool">${t.returns}</td>
+    <td class="stat ${springClass}">${t.spring}%</td>
+    <td class="stat ${restClass}">${restStr(t.rest)}</td>
+    <td class="bar-cell">
+      <div class="bar-wrap"><div class="bar-fill" style="width:${barPct}%"></div></div>
+    </td>
+    <td><a href="${spotifyUrl(t.artist, t.track)}" target="_blank" class="sp-link" title="Search on Spotify">●</a></td>
+  `;
+  tbody.appendChild(tr);
+});
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+function copyAll() {
+  const text = tracks.map(t => `${t.artist} — ${t.track}`).join('\n');
+  navigator.clipboard.writeText(text).then(() => showToast('50 tracks copied to clipboard'));
+}
+</script>
+</body>
+</html>

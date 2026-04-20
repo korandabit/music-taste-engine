@@ -41,7 +41,7 @@ reference and for users who want to rebuild the database from their own exports.
 | Standalone markdown report | `engine.py analyze --summary report.md` |
 | Artist deep-dive | `engine.py analyze --artist "Name"` |
 | Corpus feasibility map (run before playlist) | `engine.py profile` |
-| Zero-friction playlist → tuneyourmusic | `engine.py playlist` |
+| Zero-friction playlist → tunemymusic.com/transfer | `engine.py playlist` |
 
 All commands take `--db music.db` (the pre-built database in the bundle).
 
@@ -416,7 +416,7 @@ Grizzly Bear — A Simple Answer
 
 ────────────────────────────────────────────────────
 Transfer to Spotify / Apple Music / Tidal / etc:
-  https://www.tuneyourmusic.com/transfer
+  https://www.tunemymusic.com/transfer
 
 Paste the list above, pick your destination, go.
 ────────────────────────────────────────────────────
@@ -496,7 +496,7 @@ The recommended two-step flow when generating a playlist from a user request:
 2. Map the user's request to parameters using the input hook space above
 3. Validate parameter viability against pool sizes (adjust `--n` or relax filters if pool is thin)
 4. Run `engine.py playlist` with chosen parameters
-5. Return the inline tracklist and the tuneyourmusic.com/transfer link to the user
+5. Return the inline tracklist and the tunemymusic.com/transfer link to the user
 
 ### Listening autobiography
 

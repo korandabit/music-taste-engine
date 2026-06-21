@@ -13,3 +13,6 @@ music-data-engine.zip
 
 # Claude Code
 .claude/
+
+# inbox/ retired 2026-06-21 per ADR-0013 (two stores: backlog-tickets/ + dialog-log).
+# Former rules (/inbox/* + !/inbox/processed/) removed with the dir.

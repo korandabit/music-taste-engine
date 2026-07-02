@@ -17,6 +17,18 @@ Tables:
                   scrobble on the same (artist, track) are merged into one row,
                   gaining album from Last.fm and ms_played/is_skip from Spotify.
                   All other plays remain as separate rows with their source intact.
+
+Timezone (verified 2026-07-01, ticket mte-003):
+  Both sources are UTC. Spotify standard-export `endTime` is documented UTC;
+  the Last.fm CSV export (edgarturtleblot.csv) is empirically UTC too — nearest-
+  match offset between the two sources for identical (artist,track) plays clusters
+  at ~0h with NO seasonal DST shift across 2009-2026, which rules out wall-clock
+  local. The legacy `ts` column is a naive minute-truncated UTC string kept for
+  back-compat (engine.py parses it as "%Y-%m-%d %H:%M"). The `ts_utc` column is
+  the canonical, self-describing form: ISO-8601 with an explicit Z. Both exports
+  are minute-precision only, so `ts_utc` seconds are always :00 (no source has
+  finer grain). NOTE: `ts.hour` / `ts_utc` hours are UTC — convert to local at
+  ANALYSIS time for human time-of-day (late-night/peak-hour) reads.
   library_tracks  Spotify saved tracks
   library_albums  Spotify saved albums
   playlists       Spotify playlist items (flattened)
@@ -215,7 +227,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS plays (
     id          INTEGER PRIMARY KEY,
     source      TEXT NOT NULL,
-    ts          TEXT NOT NULL,
+    ts          TEXT NOT NULL,   -- legacy naive UTC, "%Y-%m-%d %H:%M" (engine.py back-compat)
+    ts_utc      TEXT NOT NULL,   -- canonical UTC ISO-8601 with Z, minute precision (seconds :00)
     artist      TEXT,
     album       TEXT,
     track       TEXT,
@@ -224,6 +237,7 @@ CREATE TABLE IF NOT EXISTS plays (
 );
 
 CREATE INDEX IF NOT EXISTS plays_ts     ON plays(ts);
+CREATE INDEX IF NOT EXISTS plays_ts_utc ON plays(ts_utc);
 CREATE INDEX IF NOT EXISTS plays_artist ON plays(artist);
 CREATE INDEX IF NOT EXISTS plays_track  ON plays(track);
 
@@ -259,10 +273,14 @@ def write_db(db_path: Path, plays, lib_tracks, lib_albums, playlist_rows):
     con.executescript(SCHEMA)
 
     con.executemany(
-        "INSERT INTO plays (source, ts, artist, album, track, ms_played, is_skip) "
-        "VALUES (:source, :ts, :artist, :album, :track, :ms_played, :is_skip)",
+        "INSERT INTO plays (source, ts, ts_utc, artist, album, track, ms_played, is_skip) "
+        "VALUES (:source, :ts, :ts_utc, :artist, :album, :track, :ms_played, :is_skip)",
         [
-            {**p, "ts": p["ts"].strftime("%Y-%m-%d %H:%M")}
+            {
+                **p,
+                "ts":     p["ts"].strftime("%Y-%m-%d %H:%M"),
+                "ts_utc": p["ts"].strftime("%Y-%m-%dT%H:%M:00Z"),
+            }
             for p in plays
         ],
     )

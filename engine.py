@@ -24,8 +24,9 @@ import sqlite3
 import statistics
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Ensure UTF-8 output on Windows where the default console encoding may be cp1252
 if hasattr(sys.stdout, "reconfigure"):
@@ -35,6 +36,9 @@ if hasattr(sys.stdout, "reconfigure"):
 # ── Config / constants ────────────────────────────────────────────────────────
 
 LATE_NIGHT_HOURS = {22, 23, 0, 1, 2, 3}
+# plays.ts / signals endTime are stored UTC (verified mte-003); this is the
+# default wall-clock zone used to derive human hour-of-day signals (mte-004).
+DEFAULT_TZ = "America/Chicago"
 SEASON_MAP = {
     1: "Winter", 2: "Winter", 3: "Spring", 4: "Spring",  5: "Spring",
     6: "Summer", 7: "Summer", 8: "Summer", 9: "Fall",   10: "Fall",
@@ -74,6 +78,29 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
     return con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
     ).fetchone() is not None
+
+
+def resolve_tz(tz_name: str | None) -> ZoneInfo | None:
+    """
+    Resolve an IANA zone name to a ZoneInfo for UTC->local hour-of-day conversion.
+    Returns None (meaning: leave hours as stored UTC) if tz_name is falsy or the
+    system has no tzdata for it -- e.g. Windows without the `tzdata` pip package.
+    """
+    if not tz_name:
+        return None
+    try:
+        return ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        print(f"  WARNING: no tzdata for '{tz_name}' (pip install tzdata for historical DST). "
+              f"Hour-of-day signals will remain UTC.", file=sys.stderr)
+        return None
+
+
+def to_local(ts: datetime, tz: ZoneInfo | None) -> datetime:
+    """Reinterpret a naive UTC timestamp in `tz`, dropping tzinfo again for downstream naive-datetime math."""
+    if tz is None:
+        return ts
+    return ts.replace(tzinfo=timezone.utc).astimezone(tz).replace(tzinfo=None)
 
 
 # ── Layer 1: Load from DB ─────────────────────────────────────────────────────
@@ -129,15 +156,16 @@ def load_library_tracks(con: sqlite3.Connection) -> set:
 
 # ── Layer 2: Per-record derived fields ───────────────────────────────────────
 
-def enrich(plays: list[dict], ref_date: datetime, target_months: set | None) -> list[dict]:
+def enrich(plays: list[dict], ref_date: datetime, target_months: set | None, tz: ZoneInfo | None = None) -> list[dict]:
     for p in plays:
-        ts = p["ts"]
+        ts       = p["ts"]
+        local_ts = to_local(ts, tz)
         p["days_ago"]      = (ref_date - ts).days
-        p["hour"]          = ts.hour
+        p["hour"]          = local_ts.hour
         p["month"]         = ts.month
         p["year"]          = ts.year
         p["season"]        = SEASON_MAP[ts.month]
-        p["is_late_night"] = ts.hour in LATE_NIGHT_HOURS
+        p["is_late_night"] = local_ts.hour in LATE_NIGHT_HOURS
         p["is_target"]     = (ts.month in target_months) if target_months else None
     return plays
 
@@ -290,6 +318,7 @@ def compute_temporal(
     timestamps: list[datetime],
     ref_date: datetime,
     target_months: set | None = None,
+    tz: ZoneInfo | None = None,
 ) -> dict:
     """Burst ratios, quartile distribution, session fingerprint, target-season ratio."""
     n     = len(timestamps)
@@ -308,13 +337,16 @@ def compute_temporal(
     distinct_days = len(set(d.date() for d in timestamps))
     ppd           = round(n / distinct_days, 2) if distinct_days else 0
 
-    hour_groups  = Counter((d.date(), d.hour) for d in timestamps)
+    # Hour-of-day is a human wall-clock concept -- convert UTC->local before deriving it (mte-004).
+    local_timestamps = [to_local(d, tz) for d in timestamps]
+
+    hour_groups  = Counter((d.date(), d.hour) for d in local_timestamps)
     repeat_plays = sum(c - 1 for c in hour_groups.values() if c > 1)
     repeat_rate  = round(repeat_plays / n, 4)
 
-    late_night_pct = round(sum(1 for d in timestamps if d.hour in LATE_NIGHT_HOURS) / n, 4)
+    late_night_pct = round(sum(1 for d in local_timestamps if d.hour in LATE_NIGHT_HOURS) / n, 4)
 
-    hour_counts = Counter(d.hour for d in timestamps)
+    hour_counts = Counter(d.hour for d in local_timestamps)
     peak_hour   = hour_counts.most_common(1)[0][0]
 
     target_season_ratio = None
@@ -631,6 +663,7 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
     gap_days      = args.gap_days
     min_plays     = args.min_plays
     min_returns   = args.min_returns
+    tz            = resolve_tz(args.tz)
 
     print(f"Opening {args.db} ...")
     con           = open_db(args.db)
@@ -664,7 +697,7 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
 
     print(f"  ref_date={ref_date.date()}  gap_days={gap_days}  target_months={sorted(target_months) if target_months else None}")
 
-    enrich(filtered, ref_date, target_months)
+    enrich(filtered, ref_date, target_months, tz)
 
     # Layer 3 + 4: aggregations
     track_groups      = group_plays_by_track(filtered)
@@ -721,7 +754,7 @@ def cmd_analyze(args: argparse.Namespace) -> dict:
                 })
 
         # Layer 6
-        temporal = compute_temporal(timestamps, ref_date, target_months)
+        temporal = compute_temporal(timestamps, ref_date, target_months, tz)
 
         # Layer 7 (epoch rates)
         epoch_rates = compute_epoch_rates(timestamps, epochs, all_plays_monthly)
@@ -1138,7 +1171,7 @@ def _sig_tag_completion(plays: list[dict], durations: dict | None) -> tuple[list
     return plays, "relative"
 
 
-def _sig_aggregate(plays: list[dict], min_plays: int, refdate: datetime) -> list[dict]:
+def _sig_aggregate(plays: list[dict], min_plays: int, refdate: datetime, tz: ZoneInfo | None = None) -> list[dict]:
     by_track: dict = defaultdict(list)
     for p in plays:
         by_track[(p["artist"], p["track"])].append(p)
@@ -1174,7 +1207,7 @@ def _sig_aggregate(plays: list[dict], min_plays: int, refdate: datetime) -> list
         within_session_repeats = sum(max(0, c - 1) for c in session_counts.values())
         max_repeats            = max(session_counts.values()) - 1
 
-        hours      = [p["ts"].hour for p in tp]
+        hours      = [to_local(p["ts"], tz).hour for p in tp]
         hour_dist: dict = defaultdict(int)
         for h in hours:
             hour_dist[str(h)] += 1
@@ -1264,6 +1297,7 @@ def cmd_signals(args: argparse.Namespace) -> None:
         datetime.strptime(args.refdate, "%Y-%m-%d")
         if args.refdate else datetime.today()
     )
+    tz = resolve_tz(args.tz)
     durations = None
     if args.durations:
         with open(args.durations, encoding="utf-8") as fh:
@@ -1288,7 +1322,7 @@ def cmd_signals(args: argparse.Namespace) -> None:
     print(f"  completion_source={completion_source}")
 
     print("Aggregating per track ...")
-    rows = _sig_aggregate(plays, args.min_plays, refdate)
+    rows = _sig_aggregate(plays, args.min_plays, refdate, tz)
     print(f"  {len(rows):,} tracks (min_plays={args.min_plays})")
 
     print(f"Writing to {args.db} ...")
@@ -1454,6 +1488,7 @@ def score_candidates(
 def cmd_playlist(args: argparse.Namespace) -> None:
     ref_date      = datetime.strptime(args.refdate, "%Y-%m-%d") if args.refdate else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     target_months = set(int(m) for m in args.months.split(",")) if args.months else None
+    tz            = resolve_tz(args.tz)
 
     # ── Load previously recommended tracks for exclusion ─────────────────────
     excluded: set[tuple] = set()
@@ -1473,7 +1508,7 @@ def cmd_playlist(args: argparse.Namespace) -> None:
     all_plays     = load_plays(con)
     con.close()
 
-    enrich(all_plays, ref_date, target_months)
+    enrich(all_plays, ref_date, target_months, tz)
     track_groups = group_plays_by_track(all_plays)
 
     tracks: list[dict] = []
@@ -1489,7 +1524,7 @@ def cmd_playlist(args: argparse.Namespace) -> None:
 
         gap_stats = compute_gaps(timestamps, 180)
         long_returns = sum(1 for g in gap_stats["gaps"] if g >= 180)
-        temporal  = compute_temporal(timestamps, ref_date, target_months)
+        temporal  = compute_temporal(timestamps, ref_date, target_months, tz)
         trajectory = classify_trajectory(
             temporal["burst_ratio_30"], temporal["burst_ratio_90"],
             temporal["q1"], temporal["q4"],
@@ -1589,6 +1624,7 @@ def cmd_profile(args: argparse.Namespace) -> None:
     this user's listening data?
     """
     ref_date = datetime.strptime(args.refdate, "%Y-%m-%d") if args.refdate else datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    tz       = resolve_tz(args.tz)
 
     con           = open_db(args.db)
     spotify_sigs  = load_spotify_signals(con)
@@ -1596,7 +1632,7 @@ def cmd_profile(args: argparse.Namespace) -> None:
     all_plays     = load_plays(con)
     con.close()
 
-    enrich(all_plays, ref_date, None)
+    enrich(all_plays, ref_date, None, tz)
     track_groups = group_plays_by_track(all_plays)
 
     REST_THRESHOLDS   = [14, 30, 90, 180, 365]
@@ -1619,7 +1655,7 @@ def cmd_profile(args: argparse.Namespace) -> None:
 
         gap_stats    = compute_gaps(timestamps, 180)
         long_returns = sum(1 for g in gap_stats["gaps"] if g >= 180)
-        temporal     = compute_temporal(timestamps, ref_date, None)
+        temporal     = compute_temporal(timestamps, ref_date, None, tz)
         trajectory   = classify_trajectory(
             temporal["burst_ratio_30"], temporal["burst_ratio_90"],
             temporal["q1"], temporal["q4"], long_returns, 0,
@@ -1741,6 +1777,7 @@ def main() -> None:
     p_sig.add_argument("--refdate",             default=None,  help="YYYY-MM-DD (default: today)")
     p_sig.add_argument("--min-plays",           type=int, default=_SIG_MIN_PLAYS)
     p_sig.add_argument("--session-gap-minutes", type=int, default=_SIG_SESSION_GAP)
+    p_sig.add_argument("--tz",                  default=DEFAULT_TZ, help="IANA zone for hour-of-day signals (default: America/Chicago; stored data stays UTC)")
 
     # ── analyze ──
     p_ana = sub.add_parser("analyze", help="Full per-track analysis")
@@ -1758,6 +1795,7 @@ def main() -> None:
     p_ana.add_argument("--season-ratio-min", type=float, default=0.30, help="Min target-season ratio for playlist")
     p_ana.add_argument("--max-per-artist",  type=int, default=4,   help="Max tracks per artist in playlist")
     p_ana.add_argument("--summary",         default=None,            help="Write human-readable markdown summary to this path")
+    p_ana.add_argument("--tz",              default=DEFAULT_TZ, help="IANA zone for hour-of-day signals (default: America/Chicago; stored data stays UTC)")
 
     # ── playlist ──
     p_pl = sub.add_parser("playlist", help="Score and output a ready-to-transfer playlist")
@@ -1777,6 +1815,7 @@ def main() -> None:
     p_pl.add_argument("--log-db",          default=None,                 help="Path to recommendation_log.db (default: auto-detect)")
     p_pl.add_argument("--run-id",          default=None,                 help="Label for this run in the log (default: context-YYYY-MM-DD)")
     p_pl.add_argument("--no-log",          action="store_true",          help="Skip reading exclusions and writing to log")
+    p_pl.add_argument("--tz",              default=DEFAULT_TZ, help="IANA zone for hour-of-day signals (default: America/Chicago; stored data stays UTC)")
 
     # ── profile ──
     p_pro = sub.add_parser("profile", help="Corpus feasibility map — run before playlist to inform parameter choices")
@@ -1784,6 +1823,7 @@ def main() -> None:
     p_pro.add_argument("--min-plays", type=int, default=5)
     p_pro.add_argument("--refdate",   default=None, help="YYYY-MM-DD (default: today)")
     p_pro.add_argument("--out",       default=None, help="Optional JSON output path")
+    p_pro.add_argument("--tz",        default=DEFAULT_TZ, help="IANA zone for hour-of-day signals (default: America/Chicago; stored data stays UTC)")
 
     args = root.parse_args()
 

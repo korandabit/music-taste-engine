@@ -549,6 +549,7 @@ For zero-friction real-world use, prefer the `playlist` subcommand over `analyze
 | `--refdate` | today | Reference date for days_since, burst ratios |
 | `--months` | (none) | Target months e.g. `3,4,5` for spring; omit for season-agnostic run |
 | `--summary` | (none) | Write a standalone markdown report to this path |
+| `--tz` | `America/Chicago` | IANA zone for hour-of-day signals (`hour`, `is_late_night`, `peak_hour`, `late_night_pct`); stored `ts`/`ts_utc` stay UTC |
 
 **Auto-calibration:** For thin corpora (< 20k plays or < 3yr span), `analyze`
 automatically lowers `--min-plays`, `--min-returns`, and `--epoch-min-plays`.
@@ -570,6 +571,7 @@ Explicitly set values are never overridden. Check `meta.corpus_calibration` in o
 | `--min-plays` | 5 | Min plays to consider a track |
 | `--refdate` | today | Reference date |
 | `--out` | (none) | Optional JSON output path |
+| `--tz` | `America/Chicago` | IANA zone for hour-of-day signals in per-track `temporal` output |
 
 ### engine.py profile (CLI flags)
 
@@ -578,6 +580,7 @@ Explicitly set values are never overridden. Check `meta.corpus_calibration` in o
 | `--min-plays` | 5 | Min plays for a track to be included in feasibility counts |
 | `--refdate` | today | Reference date |
 | `--out` | (none) | Optional JSON output path (otherwise prints to stdout) |
+| `--tz` | `America/Chicago` | IANA zone for hour-of-day signals in per-track `temporal` output |
 
 ### engine.py signals (CLI flags)
 
@@ -585,6 +588,7 @@ Explicitly set values are never overridden. Check `meta.corpus_calibration` in o
 |---|---|---|
 | `--min-plays` | 2 | Min Spotify plays for a track to appear in signals |
 | `--session-gap-minutes` | 30 | Gap that defines session boundary |
+| `--tz` | `America/Chicago` | IANA zone for `peak_hour`/`late_night_pct`/`hour_distribution` |
 
 ## Expected runtime
 

@@ -2,25 +2,27 @@
 # id: mte-005
 # kind: ticket
 # status: open
-# origin: Mark's scratch note "2026-04-30 todo notes.txt" (root of repo, orphaned uncommitted WIP flagged by mte-002) — captured at source per capture-at-source convention rather than left as a loose txt file.
+# origin: Mark's scratch note "2026-04-30 todo notes.txt" (root of repo, orphaned uncommitted WIP flagged by mte-002); unpacked into three scoped statements by Mark on 2026-07-17. This ticket is statement 1. Statement 2 is [[mte-006]]. Statement 3 (managing a lifetime of listening patterns) is explicitly left un-ticketed — reflective/theory-shaped, no clean data hypothesis, not this app's scope.
 # htttw_contribution: 0 — analysis-feature idea.
 # judgment_applied: capture-at-source
-# provenance: note dated 2026-04-30 11:19; captured as ticket 2026-07-16
-# produces: a playlist-usage-pattern model (over-use / under-use grouping) that captures functional listening use-cases
-# effort: M
-# tags: playlist, usage-modeling, idea
-# cross-links: none yet
+# provenance: note dated 2026-04-30 11:19; captured as ticket 2026-07-16; rescoped 2026-07-17
+# produces: an analysis of recommendation_log.db context/track co-occurrence — does the "mood/state" a playlist request names actually predict which tracks fill it, consistently?
+# effort: S
+# tags: playlist, usage-modeling, feedback-loop, recommendation-log
+# cross-links: mte-006, 1-self/2-journal/2023--24 continued/2026-07-17 what does a good music-listening life look like.txt (statement 3, out-of-app)
 
-# Model playlist make-use behavior: over/under-use groupings, functional use-cases
+# Read recommendation_log.db as a mood-hypothesis log, not just an exclusion list
 
-## Idea (verbatim from source note)
-"Model the playlist make-use behavior as a grouping that predicts over and under use, attempts to capture functional use-cases for music. What does a good music-listening life look like?"
+## Idea (Mark's parse, 2026-07-17)
+"The make-use behavior is the skill call. I'm pointing to, latently, that the tool is working and then saying now let's treat it as a behavior signal. Whenever I use the tool, what I'm doing is asking for a mood or state to be filled with music. Each individual track's membership [in the resulting playlist] is itself a hypothesis."
 
-## Move (not yet scoped)
-Underspecified — needs a design pass before implementation:
-- Define "over-use" / "under-use" against some baseline (e.g. plays-per-day vs. a track's historical rate, or plays vs. playlist-cohort average).
-- Define candidate "functional use-cases" (e.g. focus/background, hype, wind-down, driving) — likely requires either manual labeling of a sample or inferring clusters from existing signals (tempo/energy if content features become available via mte-001, or purely behavioral signals: session position, skip rate, time-of-day, repeat rate already in `spotify_signals`).
-- Decide whether this lives in `engine.py` as a new subcommand or as a standalone script (pattern: `self_affinity.py`).
+## Why this is cheap
+`recommendation_log.db` already logs a free-text `--context` label and `run_id` per `playlist` invocation (see `music-engine-feedback-loops.md`), plus which tracks were served. That log already *is* a rough record of "I asked for mood X, here's what the tool hypothesized would fill it" — nothing new needs to be instrumented, it just hasn't been read back as data.
+
+## Move
+- Group logged runs by `context` (exact + fuzzy-similar labels, e.g. "Sunday drive" vs "drive").
+- For repeat/similar contexts, check whether served tracks converge (same handful of tracks keep getting selected for "driving") or diverge (mood is being filled inconsistently) — a rough measure of whether the tool's mood model is stable per context.
+- Optional: surface tracks that appear across *many different* contexts (weak mood-signal, maybe just generically high-affinity) vs. tracks tightly bound to one context (strong functional-use-case signal) — this is the seed of a "functional use-case" taxonomy grounded in Mark's own request history rather than guessed content features.
 
 ## Done-when
-Either (a) a scoped design decision exists (what defines over/under-use, what the use-case taxonomy is) with a concrete next move, or (b) the analysis ships.
+An analysis exists (script or query) that answers: does context → track selection show consistent hypothesis-confirmation over repeat use, or is it noisy?

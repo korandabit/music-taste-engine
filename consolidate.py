@@ -157,6 +157,7 @@ def load_playlists(path: Path) -> list[dict]:
     for pl in d.get("playlists", []):
         name     = pl.get("name", "")
         modified = pl.get("lastModifiedDate", "")
+        position = 0  # explicit playlist order; do not rely on autoincrement id (mte-006)
         for item in pl.get("items", []):
             t = item.get("track")
             if not t:
@@ -164,10 +165,12 @@ def load_playlists(path: Path) -> list[dict]:
             rows.append({
                 "playlist_name":     name,
                 "playlist_modified": modified,
+                "position":          position,
                 "artist":            t.get("artistName", ""),
                 "album":             t.get("albumName", ""),
                 "track":             t.get("trackName", ""),
             })
+            position += 1
     return rows
 
 
@@ -258,6 +261,7 @@ CREATE TABLE IF NOT EXISTS playlists (
     id                INTEGER PRIMARY KEY,
     playlist_name     TEXT,
     playlist_modified TEXT,
+    position          INTEGER,   -- 0-based order within the playlist (mte-006); explicit, not id-derived
     artist            TEXT,
     album             TEXT,
     track             TEXT
@@ -296,8 +300,8 @@ def write_db(db_path: Path, plays, lib_tracks, lib_albums, playlist_rows):
     )
 
     con.executemany(
-        "INSERT INTO playlists (playlist_name, playlist_modified, artist, album, track) "
-        "VALUES (:playlist_name, :playlist_modified, :artist, :album, :track)",
+        "INSERT INTO playlists (playlist_name, playlist_modified, position, artist, album, track) "
+        "VALUES (:playlist_name, :playlist_modified, :position, :artist, :album, :track)",
         playlist_rows,
     )
 

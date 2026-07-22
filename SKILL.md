@@ -96,9 +96,11 @@ total: 121,370
 
 **`plays`** (written by consolidate.py):
 ```sql
-id, source, ts, artist, album, track, ms_played, is_skip
+id, source, ts, ts_utc, artist, album, track, ms_played, is_skip
 ```
 `source` is one of `lastfm`, `spotify`, `lastfm+spotify`.
+`ts` is naive `YYYY-MM-DD HH:MM` (engine.py back-compat); `ts_utc` is the canonical
+self-describing UTC ISO-8601 (`...Z`, minute precision) added in mte-003 — prefer it.
 `ms_played` and `is_skip` are populated only on Spotify-sourced rows.
 Extended Streaming History provides `album` on Spotify rows; standard export does not.
 
@@ -112,7 +114,7 @@ peak_hour, late_night_pct, hour_distribution,
 plays_first_30d, plays_last_30d, burst_ratio_30
 ```
 
-**`library_tracks`, `library_albums`, `playlists`**: Spotify saved items (from `YourLibrary.json` / `Playlist1.json`).
+**`library_tracks`, `library_albums`, `playlists`**: Spotify saved items (from `YourLibrary.json` / `Playlist1.json`). `playlists` carries an explicit 0-based `position` column (playlist order; added mte-006) — use it rather than relying on `id` ordering.
 
 ### Querying music.db
 

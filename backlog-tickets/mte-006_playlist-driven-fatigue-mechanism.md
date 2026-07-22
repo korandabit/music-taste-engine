@@ -1,7 +1,7 @@
 # CATALOG:
 # id: mte-006
 # kind: ticket
-# status: open
+# status: done
 # origin: Mark's unpacked scratch note (2026-04-30 todo notes.txt / mte-005 origin), statement 2, 2026-07-17.
 # htttw_contribution: 0 — analysis-feature idea, data-availability-constrained.
 # judgment_applied: capture-at-source, verify-premise-before-fix (checked raw Spotify export schema before scoping)
@@ -63,3 +63,25 @@ autoincrement-id ordering is fragile).
 The subsequence-match pass exists, its match-confidence and temporal-validity limits are
 documented in its output, and the playlist-corroborated vs. freely-chosen fatigue comparison
 is reported (even if the finding is "no detectable difference").
+
+## Resolution (2026-07-22)
+Built `mte006_playlist_fatigue.py` (stdlib only, re-runnable). Full write-up:
+`mte006_findings.md`.
+- **Schema:** added explicit 0-based `position` to `playlists` in `consolidate.py` (future
+  rebuilds) and migrated the live `music.db` in place (`--migrate`, backup taken).
+  Verified all 147 playlists have contiguous id ranges, so id-order == JSON order ==
+  playlist order; backfill is sound.
+- **Matching:** sequence-fingerprint corroboration (playlist-order runs in the `ts_utc`-
+  ordered stream; min_run=4, allow ≤1 skip, session-adjacent). Found **1,936 runs** (max
+  len 56), corroborating **12,284 plays** — method demonstrably works despite no
+  `context_uri`. Each run carries confidence + `temporal_delta_days`.
+- **Temporal validity (large caveat):** only **1,655** corroborated plays fall within 180d
+  of the playlist's `lastModifiedDate` (the strict, defensible subset); ~87% match an order
+  recorded far from when the play happened.
+- **Fatigue finding:** corroborated plays are skipped *less* (0.094 any / 0.119 strict) than
+  freely-chosen (0.197) — the **opposite** of the hypothesized net-fatigue effect, and
+  confounded by the intentional-listening selection baked into detection. A weak per-track
+  "skipped-more-in-its-playlist" signal exists for a handful of tracks (n=3–9, suggestive
+  only). Net: **no detectable playlist-driven fatigue effect** in Spotify's data; mechanism
+  not cleanly isolable — consistent with the ticket's own anticipation.
+- No change to the `playlist` exclusion model (recency-based) is warranted on this basis.

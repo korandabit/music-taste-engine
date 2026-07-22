@@ -324,6 +324,7 @@ def main():
     ap.add_argument("--max-wall-gap-min", type=float, default=15.0)
     ap.add_argument("--strict-window-days", type=int, default=180,
                     help="run's median play date must be within this of playlist_modified to count as strict")
+    ap.add_argument("--no-emit", action="store_true", help="skip writing this run to the provenance registry")
     args = ap.parse_args()
 
     db_path = Path(args.db)
@@ -352,6 +353,42 @@ def main():
     if args.out:
         Path(args.out).write_text(json.dumps(res, indent=2, default=str), encoding="utf-8")
         print(f"[analyze] full JSON -> {args.out}")
+
+    # emit to the provenance registry: this analysis is a SURFACE (levers + stats),
+    # not a verdict. Re-running with different levers appends a run and updates the row.
+    if not args.no_emit:
+        import registry
+        m, fc = res["matching"], res["fatigue_comparison"]
+        sr_corr = fc["corroborated_any"]["skip_rate"]
+        sr_free = fc["freely_chosen"]["skip_rate"]
+        registry.emit(
+            analysis="mte006_playlist_fatigue", version="1.0", levers=params,
+            stats={
+                "runs_found": m["runs_found"],
+                "plays_corroborated_any": m["plays_corroborated_any"],
+                "plays_corroborated_strict": m["plays_corroborated_strict"],
+                "skip_rate_corroborated": round(sr_corr, 4) if sr_corr is not None else None,
+                "skip_rate_free": round(sr_free, 4) if sr_free is not None else None,
+            },
+            findings=[{
+                "id": "mte006.playlist_fatigue",
+                "claim": ("No detectable playlist-driven fatigue: plays corroborated as part of a "
+                          "playlist-order run are skipped LESS (~0.09–0.12) than freely-chosen plays "
+                          "(~0.20) — opposite of the hypothesized net effect, and confounded by the "
+                          "intentional-listening selection baked into the detection method."),
+                "status": "provisional", "confidence": "low",
+                "caveats": ("Temporal validity is a large filter — only the strict-window subset of "
+                            "corroborated plays matches a playlist order recorded near the play date. "
+                            "A weak per-track 'skipped-more-in-its-playlist' signal exists but is too "
+                            "thin (n=3–9) to confirm cumulative overplay. Direct causal test is "
+                            "impossible: Spotify's export has no playlist attribution (no context_uri)."),
+                "key_stats": {
+                    "skip_rate_corroborated": round(sr_corr, 4) if sr_corr is not None else None,
+                    "skip_rate_free": round(sr_free, 4) if sr_free is not None else None,
+                    "runs_found": m["runs_found"],
+                },
+            }],
+        )
 
 
 if __name__ == "__main__":

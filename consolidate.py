@@ -313,20 +313,24 @@ def write_db(db_path: Path, plays, lib_tracks, lib_albums, playlist_rows):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv",         required=True,        help="Last.fm CSV export path")
+    ap.add_argument("--csv",         required=False, default=None, help="Last.fm CSV export path (omit for Spotify-only mode)")
     ap.add_argument("--spotify-dir", default=None,         help="Directory containing StreamingHistory*.json / Streaming_History_Audio_*.json")
     ap.add_argument("--meta-dir",    default=None,         help="Directory containing YourLibrary.json and Playlist1.json (defaults to --spotify-dir)")
     ap.add_argument("--out",         default="data/music.db", help="Output SQLite path")
     args = ap.parse_args()
 
-    csv_path     = Path(args.csv)
+    csv_path     = Path(args.csv) if args.csv else None
     spotify_dir  = Path(args.spotify_dir) if args.spotify_dir else None
     meta_dir     = Path(args.meta_dir) if args.meta_dir else spotify_dir
     out_path     = Path(args.out)
 
-    print("Loading Last.fm CSV...")
-    lastfm = load_lastfm(csv_path)
-    print(f"  {len(lastfm):,} plays")
+    if csv_path:
+        print("Loading Last.fm CSV...")
+        lastfm = load_lastfm(csv_path)
+        print(f"  {len(lastfm):,} plays")
+    else:
+        print("No --csv given; skipping Last.fm load (Spotify-only mode).")
+        lastfm = []
 
     spotify_plays_all: list[dict] = []
     if spotify_dir:

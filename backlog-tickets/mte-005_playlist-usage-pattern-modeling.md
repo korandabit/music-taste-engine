@@ -1,7 +1,7 @@
 # CATALOG:
 # id: mte-005
 # kind: ticket
-# status: open
+# status: done
 # origin: Mark's scratch note "2026-04-30 todo notes.txt" (root of repo, orphaned uncommitted WIP flagged by mte-002); unpacked into three scoped statements by Mark on 2026-07-17. This ticket is statement 1. Statement 2 is [[mte-006]]. Statement 3 (managing a lifetime of listening patterns) is explicitly left un-ticketed — reflective/theory-shaped, no clean data hypothesis, not this app's scope.
 # htttw_contribution: 0 — analysis-feature idea.
 # judgment_applied: capture-at-source
@@ -26,3 +26,16 @@
 
 ## Done-when
 An analysis exists (script or query) that answers: does context → track selection show consistent hypothesis-confirmation over repeat use, or is it noisy?
+
+## Resolution (2026-07-22)
+Ran mte005_context_analysis.py against recommendation_log.db. Primary question
+(repeat-context convergence) is untestable: 5 runs, 5 distinct contexts, zero
+repeats — no repeat structure exists to measure over. Secondary question
+(cross-context track overlap) is answerable: of 168 distinct (artist,track)
+pairs across the 5 runs, only 2 (1.2%) appear in more than one run (Neutral
+Milk Hotel "Oh Comely" and Poppy Ackroyd "Feathers", both in melancholic-piano
++ spring-2026); 166 are single-context. n=5 is too thin to generalize.
+Findings: mte005_findings.md. Script: mte005_context_analysis.py.
+The stored `context` "mojibake" (`spring · LTP · scored`) is NOT corruption — it's a
+legitimate U+00B7 MIDDLE DOT (`\xc2\xb7`) that some Windows consoles fail to render.
+Instrumentation gaps that block future convergence testing captured as [[mte-007]].
